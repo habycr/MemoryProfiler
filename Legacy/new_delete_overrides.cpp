@@ -22,6 +22,13 @@
 namespace {
 // Reentrancia: si true, no registramos (evita loops cuando el registry asigna internamente)
 thread_local bool mp_in_new = false;
+  // --- RAII para marcar/desmarcar reentrancia de new/delete ---
+  struct ReentrancyGuard {
+    bool prev;
+    ReentrancyGuard() noexcept : prev(mp_in_new) { mp_in_new = true; }
+    ~ReentrancyGuard() { mp_in_new = prev; }
+  };
+
 
 // Canal de metadatos capturados por las macros/overloads de file/line/type
 thread_local const char* mp_file  = nullptr;
