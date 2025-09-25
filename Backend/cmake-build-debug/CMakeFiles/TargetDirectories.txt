@@ -1,6 +1,0 @@
-C:/Users/josef/OneDrive/Documentos/GitHub/Proyecto1_Datos2_2025/cmake-build-debug/CMakeFiles/demo.dir
-C:/Users/josef/OneDrive/Documentos/GitHub/Proyecto1_Datos2_2025/cmake-build-debug/CMakeFiles/edit_cache.dir
-C:/Users/josef/OneDrive/Documentos/GitHub/Proyecto1_Datos2_2025/cmake-build-debug/CMakeFiles/rebuild_cache.dir
-C:/Users/josef/OneDrive/Documentos/GitHub/Proyecto1_Datos2_2025/cmake-build-debug/memoryprofiler/CMakeFiles/memprof_obj.dir
-C:/Users/josef/OneDrive/Documentos/GitHub/Proyecto1_Datos2_2025/cmake-build-debug/memoryprofiler/CMakeFiles/edit_cache.dir
-C:/Users/josef/OneDrive/Documentos/GitHub/Proyecto1_Datos2_2025/cmake-build-debug/memoryprofiler/CMakeFiles/rebuild_cache.dir
