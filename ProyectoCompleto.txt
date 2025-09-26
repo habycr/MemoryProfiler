@@ -1,0 +1,2750 @@
+Estructura del directorio: C:\Users\Javier\OneDrive\Documentos\GitHub\MemoryProfiler
+
+MemoryProfiler
+├── .idea
+│   ├── .gitignore
+│   ├── MemoryProfiler.iml
+│   ├── editor.xml
+│   ├── misc.xml
+│   ├── modules.xml
+│   ├── shelf
+│   │   ├── Uncommitted_changes_before_Update_at_26_9_2025_03_12_[Changes]
+│   │   │   ├── shelved.patch
+│   │   ├── Uncommitted_changes_before_Update_at_26_9_2025_03_12__Changes_.xml
+│   ├── vcs.xml
+│   ├── workspace.xml
+├── CMakeLists.txt
+├── Legacy
+│   ├── LegacyBridge.cpp
+│   ├── memprof.hpp
+│   ├── new_delete_overrides.cpp
+│   ├── registry.cpp
+│   ├── registry.hpp
+├── examples
+│   ├── broker_client_example.cpp
+│   ├── metrics_stream.cpp
+├── gui
+│   ├── app.js
+│   ├── index.html
+│   ├── style.css
+├── include
+│   ├── BrokerClient.h
+│   ├── LegacyBridge.h
+│   ├── MemoryTracker.h
+│   ├── MetricsCalculator.h
+│   ├── NetUtils.h
+│   ├── Protocol.h
+│   ├── SocketServer.h
+├── src
+│   ├── BrokerClient.cpp
+│   ├── MemoryTracker.cpp
+│   ├── MetricsCalculator.cpp
+│   ├── NetUtils.cpp
+│   ├── Protocol.cpp
+│   ├── SocketServer.cpp
+│   ├── gui_http_server.cpp
+│   ├── main.cpp
+├── tests
+│   ├── test_metrics.cpp
+│   ├── test_socket.cpp
+
+================================================================================
+CONTENIDO DE ARCHIVOS
+================================================================================
+
+CMakeLists.txt:
+---------------
+cmake_minimum_required(VERSION 3.20)
+project(MemoryProfiler LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(LEGACY_DIR ${CMAKE_SOURCE_DIR}/Legacy)
+
+# ========== Librería común ==========
+add_library(mp_common STATIC
+        src/Protocol.cpp
+        src/NetUtils.cpp
+)
+target_include_directories(mp_common PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_features(mp_common PUBLIC cxx_std_20)
+if (WIN32)
+    target_link_libraries(mp_common PUBLIC ws2_32)
+else()
+    find_package(Threads REQUIRED)
+    target_link_libraries(mp_common PUBLIC Threads::Threads)
+endif()
+
+# ========== SDK tracker ==========
+add_library(mp_tracker STATIC src/MemoryTracker.cpp)
+target_include_directories(mp_tracker PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(mp_tracker PUBLIC mp_common)
+target_compile_features(mp_tracker PUBLIC cxx_std_20)
+
+# ========== Servidor (broker) ==========
+add_executable(memory_profiler_server
+        src/main.cpp
+        src/SocketServer.cpp
+)
+target_include_directories(memory_profiler_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(memory_profiler_server PRIVATE mp_common)
+if (WIN32)
+    target_link_libraries(memory_profiler_server PRIVATE ws2_32)
+else()
+    target_link_libraries(memory_profiler_server PRIVATE Threads::Threads)
+endif()
+
+# ========== Cliente broker (lib) ==========
+add_library(mp_brokerclient STATIC src/BrokerClient.cpp)
+target_include_directories(mp_brokerclient PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(mp_brokerclient PUBLIC mp_common)
+if (WIN32)
+    target_link_libraries(mp_brokerclient PUBLIC ws2_32)
+endif()
+
+# ========== Métricas (lib) ==========
+add_library(mp_metrics STATIC src/MetricsCalculator.cpp)
+target_include_directories(mp_metrics PUBLIC ${CMAKE_SOURCE_DIR}/include)
+if (NOT WIN32)
+    find_package(Threads REQUIRED)
+    target_link_libraries(mp_metrics PUBLIC Threads::Threads)
+endif()
+
+# ========== Ejemplos ==========
+add_executable(broker_client_example
+        examples/broker_client_example.cpp
+)
+target_include_directories(broker_client_example PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(broker_client_example PRIVATE mp_brokerclient)
+
+add_executable(metrics_stream_example
+        examples/metrics_stream.cpp
+)
+target_include_directories(metrics_stream_example PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(metrics_stream_example PRIVATE mp_brokerclient mp_metrics)
+if (WIN32)
+    target_link_libraries(metrics_stream_example PRIVATE ws2_32)
+endif()
+
+# ========== Tests ==========
+add_executable(test_socket tests/test_socket.cpp)
+target_include_directories(test_socket PRIVATE ${CMAKE_SOURCE_DIR}/include ${LEGACY_DIR})
+target_link_libraries(test_socket PRIVATE mp_common mp_tracker)
+
+# legacy overrides para test_socket
+add_library(memprof_legacy OBJECT
+        ${LEGACY_DIR}/new_delete_overrides.cpp
+        ${LEGACY_DIR}/registry.cpp
+)
+target_include_directories(memprof_legacy PRIVATE ${LEGACY_DIR})
+target_compile_definitions(memprof_legacy PRIVATE MEMPROF_ENABLE_REGISTRY)
+target_link_libraries(test_socket PRIVATE memprof_bridge $<TARGET_OBJECTS:memprof_legacy>)
+
+add_library(memprof_bridge STATIC ${LEGACY_DIR}/LegacyBridge.cpp)
+target_include_directories(memprof_bridge PUBLIC ${CMAKE_SOURCE_DIR}/include ${LEGACY_DIR})
+target_link_libraries(memprof_bridge PUBLIC mp_common mp_tracker)
+
+add_executable(test_metrics tests/test_metrics.cpp)
+target_include_directories(test_metrics PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_metrics PRIVATE mp_metrics)
+
+include(CTest)
+add_test(NAME metrics_unit_test COMMAND test_metrics)
+
+# ========== Warnings ==========
+if (MSVC)
+    foreach(t mp_common mp_tracker memory_profiler_server mp_brokerclient mp_metrics broker_client_example metrics_stream_example test_socket test_metrics)
+        target_compile_options(${t} PRIVATE /W4 /permissive- /utf-8)
+    endforeach()
+else()
+    foreach(t mp_common mp_tracker memory_profiler_server mp_brokerclient mp_metrics broker_client_example metrics_stream_example test_socket test_metrics)
+        target_compile_options(${t} PRIVATE -Wall -Wextra -Wpedantic)
+    endforeach()
+endif()
+
+# ========== Servidor HTTP de métricas + estáticos ==========
+add_executable(gui_http_server
+        src/gui_http_server.cpp
+)
+target_include_directories(gui_http_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(gui_http_server PRIVATE mp_brokerclient mp_metrics mp_common)
+if (WIN32)
+    target_link_libraries(gui_http_server PRIVATE ws2_32)
+else()
+    find_package(Threads REQUIRED)
+    target_link_libraries(gui_http_server PRIVATE Threads::Threads)
+endif()
+
+
+--------------------------------------------------
+
+LegacyBridge.cpp:
+-----------------
+#include "LegacyBridge.h"
+
+#include "memprof.hpp"     // eventos legacy
+#include "Protocol.h"      // tópicos y encode
+#include "MemoryTracker.h" // ProfilerClient (SDK)
+
+#include <cstdio>
+#include <string>
+
+namespace {
+
+    inline const char* kind_str(memprof::EventKind k) noexcept {
+        return (k == memprof::EventKind::Alloc) ? "ALLOC" : "FREE";
+    }
+
+    // Ojo: esto arma JSON en un buffer de stack para evitar grandes allocs.
+    inline int make_json(char* out, int cap, const memprof::Event& ev) noexcept {
+        // Campos pueden ser null
+        const char* file = ev.file ? ev.file : "";
+        const char* type = ev.type ? ev.type : "";
+        // NOTA: thread_id/timestamp_ns vienen del legacy
+        return std::snprintf(out, cap,
+            "{\"kind\":\"%s\",\"ptr\":\"%p\",\"size\":%zu,"
+            "\"file\":\"%s\",\"line\":%d,"
+            "\"type\":\"%s\",\"is_array\":%d,"
+            "\"ts_ns\":%llu,\"thread\":%llu}",
+            kind_str(ev.kind), ev.ptr, static_cast<size_t>(ev.size),
+            file, ev.line, type, ev.is_array ? 1 : 0,
+            (unsigned long long)ev.timestamp_ns,
+            (unsigned long long)ev.thread_id
+        );
+    }
+
+    void legacy_sink_to_broker(const memprof::Event& ev) noexcept {
+        // Armar payload JSON en stack
+        char json[768];
+        int n = make_json(json, sizeof(json), ev);
+        if (n <= 0) return;
+        try {
+            // Publicar al broker en el tópico unificado
+            // (puedes cambiar a TOPIC_ALLOCATION/DEALLOCATION si prefieres)
+            ProfilerClient::instance().publish(protocol::TOPIC_MEMORY_UPDATE, std::string(json, (size_t)n));
+        } catch (...) {
+            // Swallow: no romper la app si hay error de red
+        }
+    }
+
+} // namespace
+
+namespace legacy_bridge {
+
+    void install_socket_sink(const std::string& ip, unsigned short port, const std::string& appId) {
+        // Configura el destino del SDK
+        ProfilerClient::instance().configure(ip, port, appId);
+
+        // Conectar legacy -> sink
+        memprof::set_sink(&legacy_sink_to_broker);
+    }
+
+} // namespace legacy_bridge
+
+
+--------------------------------------------------
+
+new_delete_overrides.cpp:
+-------------------------
+// src/new_delete_overrides.cpp
+#include <new>
+#include <cstddef>
+#include <cstdlib>
+#include <atomic>
+
+#if defined(_MSC_VER) || defined(__MINGW32__)
+  #include <malloc.h> // _aligned_malloc, _aligned_free
+#endif
+
+#ifdef MEMPROF_ENABLE_REGISTRY
+  #include "registry.hpp"
+  #define MP_REG_ALLOC_SCALAR(P,SZ,FILE,LINE,TYPE) memprof::register_alloc((P),(SZ),(FILE),(LINE),(TYPE),false)
+  #define MP_REG_ALLOC_ARRAY(P,SZ,FILE,LINE,TYPE)  memprof::register_alloc((P),(SZ),(FILE),(LINE),(TYPE),true)
+  #define MP_REG_FREE(P)            memprof::register_free((P))
+#else
+  #define MP_REG_ALLOC_SCALAR(P,SZ,FILE,LINE,TYPE) ((void)0)
+  #define MP_REG_ALLOC_ARRAY(P,SZ,FILE,LINE,TYPE)  ((void)0)
+  #define MP_REG_FREE(P)                           ((void)0)
+#endif
+
+namespace {
+// Reentrancia: si true, no registramos (evita loops cuando el registry asigna internamente)
+thread_local bool mp_in_new = false;
+  // --- RAII para marcar/desmarcar reentrancia de new/delete ---
+  struct ReentrancyGuard {
+    bool prev;
+    ReentrancyGuard() noexcept : prev(mp_in_new) { mp_in_new = true; }
+    ~ReentrancyGuard() { mp_in_new = prev; }
+  };
+
+
+// Canal de metadatos capturados por las macros/overloads de file/line/type
+thread_local const char* mp_file  = nullptr;
+thread_local int         mp_line  = 0;
+thread_local const char* mp_type  = nullptr;
+
+// Helpers aligned
+inline void* mp_aligned_alloc(std::size_t n, std::size_t alignment) {
+#if defined(_MSC_VER) || defined(__MINGW32__)
+  if (alignment == 0) alignment = alignof(std::max_align_t);
+  return _aligned_malloc(n, alignment);
+#else
+  if (alignment < sizeof(void*)) alignment = sizeof(void*);
+  std::size_t p = 1; while (p < alignment) p <<= 1; alignment = p;
+  std::size_t size = n;
+  if (alignment && (size % alignment)) size += alignment - (size % alignment);
+  void* ptr = nullptr;
+  if (posix_memalign(&ptr, alignment, size) != 0) return nullptr;
+  return ptr;
+#endif
+}
+inline void mp_aligned_free(void* p) noexcept {
+#if defined(_MSC_VER) || defined(__MINGW32__)
+  _aligned_free(p);
+#else
+  std::free(p);
+#endif
+}
+
+// Consume (y limpia) el contexto actual para no “contaminar” la siguiente asignación
+struct Ctx {
+  const char* file; int line; const char* type;
+};
+inline Ctx consume_ctx() {
+  Ctx c{ mp_file, mp_line, mp_type };
+  mp_file = nullptr; mp_line = 0; mp_type = nullptr;
+  return c;
+}
+} // anon
+
+// ======================================================
+//              new / delete (ESCALAR)
+// ======================================================
+void* operator new(std::size_t n) {
+  if (n == 0) n = 1;
+
+  if (mp_in_new) { // reentrante: NO registrar
+    void* p = std::malloc(n);
+    if (!p) throw std::bad_alloc();
+    return p;
+  }
+
+  mp_in_new = true;
+  void* p = std::malloc(n);
+  if (!p) { mp_in_new = false; throw std::bad_alloc(); }
+  auto c = consume_ctx();
+  MP_REG_ALLOC_SCALAR(p, n, c.file, c.line, c.type);
+  mp_in_new = false;
+  return p;
+}
+
+void operator delete(void* p) noexcept {
+  if (!p) return;
+
+  if (mp_in_new) { std::free(p); return; }
+
+  mp_in_new = true;
+  MP_REG_FREE(p);
+  std::free(p);
+  mp_in_new = false;
+}
+
+// nothrow / sized
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+  try { return ::operator new(n); } catch (...) { return nullptr; }
+}
+void operator delete(void* p, const std::nothrow_t&) noexcept { ::operator delete(p); }
+void operator delete(void* p, std::size_t) noexcept { ::operator delete(p); }
+
+// ======================================================
+//              new[] / delete[] (ARREGLOS)
+// ======================================================
+void* operator new[](std::size_t n) {
+  if (n == 0) n = 1;
+
+  if (mp_in_new) {
+    void* p = std::malloc(n);
+    if (!p) throw std::bad_alloc();
+    return p;
+  }
+
+  mp_in_new = true;
+  void* p = std::malloc(n);
+  if (!p) { mp_in_new = false; throw std::bad_alloc(); }
+  auto c = consume_ctx();
+  MP_REG_ALLOC_ARRAY(p, n, c.file, c.line, c.type);
+  mp_in_new = false;
+  return p;
+}
+
+void operator delete[](void* p) noexcept {
+  if (!p) return;
+
+  if (mp_in_new) { std::free(p); return; }
+
+  mp_in_new = true;
+  MP_REG_FREE(p);
+  std::free(p);
+  mp_in_new = false;
+}
+
+void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
+  try { return ::operator new[](n); } catch (...) { return nullptr; }
+}
+void operator delete[](void* p, const std::nothrow_t&) noexcept { ::operator delete[](p); }
+void operator delete[](void* p, std::size_t) noexcept { ::operator delete[](p); }
+
+// ======================================================
+//          ALIGNED new / delete (C++17)
+// ======================================================
+void* operator new(std::size_t n, std::align_val_t al) {
+  if (n == 0) n = 1;
+  std::size_t alignment = static_cast<std::size_t>(al);
+
+  if (mp_in_new) {
+    void* p = mp_aligned_alloc(n, alignment);
+    if (!p) throw std::bad_alloc();
+    return p;
+  }
+
+  mp_in_new = true;
+  void* p = mp_aligned_alloc(n, alignment);
+  if (!p) { mp_in_new = false; throw std::bad_alloc(); }
+  auto c = consume_ctx();
+  MP_REG_ALLOC_SCALAR(p, n, c.file, c.line, c.type);
+  mp_in_new = false;
+  return p;
+}
+void operator delete(void* p, std::align_val_t al) noexcept {
+  if (!p) return;
+  (void)al;
+
+  if (mp_in_new) { mp_aligned_free(p); return; }
+
+  mp_in_new = true;
+  MP_REG_FREE(p);
+  mp_aligned_free(p);
+  mp_in_new = false;
+}
+
+void* operator new(std::size_t n, std::align_val_t al, const std::nothrow_t&) noexcept {
+  try { return ::operator new(n, al); } catch (...) { return nullptr; }
+}
+void operator delete(void* p, std::align_val_t al, const std::nothrow_t&) noexcept {
+  ::operator delete(p, al);
+}
+void operator delete(void* p, std::size_t, std::align_val_t al) noexcept {
+  ::operator delete(p, al);
+}
+
+// ======================================================
+//        ALIGNED new[] / delete[] (C++17)
+// ======================================================
+void* operator new[](std::size_t n, std::align_val_t al) {
+  if (n == 0) n = 1;
+  std::size_t alignment = static_cast<std::size_t>(al);
+
+  if (mp_in_new) {
+    void* p = mp_aligned_alloc(n, alignment);
+    if (!p) throw std::bad_alloc();
+    return p;
+  }
+
+  mp_in_new = true;
+  void* p = mp_aligned_alloc(n, alignment);
+  if (!p) { mp_in_new = false; throw std::bad_alloc(); }
+  auto c = consume_ctx();
+  MP_REG_ALLOC_ARRAY(p, n, c.file, c.line, c.type);
+  mp_in_new = false;
+  return p;
+}
+void operator delete[](void* p, std::align_val_t al) noexcept {
+  if (!p) return;
+  (void)al;
+
+  if (mp_in_new) { mp_aligned_free(p); return; }
+
+  mp_in_new = true;
+  MP_REG_FREE(p);
+  mp_aligned_free(p);
+  mp_in_new = false;
+}
+void* operator new[](std::size_t n, std::align_val_t al, const std::nothrow_t&) noexcept {
+  try { return ::operator new[](n, al); } catch (...) { return nullptr; }
+}
+void operator delete[](void* p, std::align_val_t al, const std::nothrow_t&) noexcept {
+  ::operator delete[](p, al);
+}
+void operator delete[](void* p, std::size_t, std::align_val_t al) noexcept {
+  ::operator delete[](p, al);
+}
+
+// ======================================================
+//  Overloads “placement-like” para capturar file/line/type
+//  usadas por las macros del header público
+// ======================================================
+#ifdef MEMPROF_ENABLE_REGISTRY
+#define MP_REG_ALLOC_META(P,SZ,FILE,LINE,TYPE,ISARR) \
+memprof::register_alloc((P),(SZ),(FILE),(LINE),(TYPE),(ISARR))
+#else
+#define MP_REG_ALLOC_META(...) ((void)0)
+#endif
+
+// --- Captura file/line (escalares/arrays) ---
+void* operator new(std::size_t n, const char* file, int line) {
+  if (n == 0) n = 1;
+  ReentrancyGuard g;
+  void* p = std::malloc(n);
+  if (!p) throw std::bad_alloc();
+  MP_REG_ALLOC_META(p, n, file, line, nullptr, false);
+  return p;
+}
+
+void* operator new[](std::size_t n, const char* file, int line) {
+  if (n == 0) n = 1;
+  ReentrancyGuard g;
+  void* p = std::malloc(n);
+  if (!p) throw std::bad_alloc();
+  MP_REG_ALLOC_META(p, n, file, line, nullptr, true);
+  return p;
+}
+
+// --- Captura file/line/type (escalares/arrays) ---
+void* operator new(std::size_t n, const char* file, int line, const char* type) {
+  if (n == 0) n = 1;
+  ReentrancyGuard g;
+  void* p = std::malloc(n);
+  if (!p) throw std::bad_alloc();
+  MP_REG_ALLOC_META(p, n, file, line, type, false);
+  return p;
+}
+
+void* operator new[](std::size_t n, const char* file, int line, const char* type) {
+  if (n == 0) n = 1;
+  ReentrancyGuard g;
+  void* p = std::malloc(n);
+  if (!p) throw std::bad_alloc();
+  MP_REG_ALLOC_META(p, n, file, line, type, true);
+  return p;
+}
+
+
+
+--------------------------------------------------
+
+registry.cpp:
+-------------
+#include "registry.hpp"
+#include "memprof.hpp"
+
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
+#include <chrono>
+#include <thread>
+#include <cstdio>
+
+namespace {
+
+using clock_t = std::chrono::steady_clock;
+
+inline std::uint64_t now_ns() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        clock_t::now().time_since_epoch()).count();
+}
+
+inline std::uint64_t thread_id_u64() noexcept {
+    auto id = std::this_thread::get_id();
+    // hash estable suficiente para métricas
+    return std::hash<std::thread::id>{}(id);
+}
+
+struct State {
+    std::unordered_map<void*, memprof::AllocInfo> live;
+    std::mutex mtx;
+
+    std::atomic<std::uint64_t> bytes_current{0};
+    std::atomic<std::uint64_t> bytes_peak{0};
+    std::atomic<std::uint64_t> allocs_total{0};
+    std::atomic<std::uint64_t> allocs_active{0};
+    std::atomic<std::uint64_t> idgen{1};
+
+    memprof::Sink sink{nullptr};
+
+    void update_peak(std::uint64_t cur) {
+        auto old = bytes_peak.load(std::memory_order_relaxed);
+        while (cur > old &&
+               !bytes_peak.compare_exchange_weak(old, cur, std::memory_order_relaxed)) { /* spin */ }
+    }
+};
+
+State& S() {
+    static State s;
+    return s;
+}
+
+} // anon
+
+namespace memprof {
+
+void set_sink(Sink s) noexcept {
+    S().sink = s;
+}
+
+void register_alloc(void* p,
+                    std::size_t size,
+                    const char* file,
+                    int line,
+                    const char* type,
+                    bool is_array) noexcept
+{
+    if (!p) return;
+    auto& st = S();
+    const auto tns = now_ns();
+    const auto tid = thread_id_u64();
+    const auto id  = st.idgen.fetch_add(1, std::memory_order_relaxed);
+
+    {
+        std::lock_guard<std::mutex> lk(st.mtx);
+        AllocInfo ai;
+        ai.size        = size;
+        ai.file        = file;
+        ai.line        = line;
+        ai.type        = type;
+        ai.timestamp_ns= tns;
+        ai.id          = id;
+        ai.is_array    = is_array;
+        ai.thread_id   = tid;
+        st.live[p] = ai;
+    }
+
+    const auto cur = st.bytes_current.fetch_add(size, std::memory_order_relaxed) + size;
+    st.update_peak(cur);
+    st.allocs_total.fetch_add(1, std::memory_order_relaxed);
+    st.allocs_active.fetch_add(1, std::memory_order_relaxed);
+
+    if (st.sink) {
+        Event ev{ EventKind::Alloc, p, size, type, file, line, tns, is_array, tid };
+        st.sink(ev);
+    }
+}
+
+void register_free(void* p) noexcept {
+    if (!p) return;
+    auto& st = S();
+
+    std::size_t freed = 0;
+    const char* file = nullptr;
+    int line = 0;
+    const char* type = nullptr;
+    bool is_array = false;
+    std::uint64_t tns = now_ns();
+    std::uint64_t tid = thread_id_u64();
+
+    {
+        std::lock_guard<std::mutex> lk(st.mtx);
+        auto it = st.live.find(p);
+        if (it != st.live.end()) {
+            freed    = it->second.size;
+            file     = it->second.file;
+            line     = it->second.line;
+            type     = it->second.type;
+            is_array = it->second.is_array;
+            st.live.erase(it);
+        }
+    }
+
+    if (freed) {
+        st.bytes_current.fetch_sub(freed, std::memory_order_relaxed);
+        st.allocs_active.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    if (st.sink) {
+        Event ev{ EventKind::Free, p, freed, type, file, line, tns, is_array, tid };
+        st.sink(ev);
+    }
+}
+
+// Métricas
+std::uint64_t current_bytes() noexcept { return S().bytes_current.load(std::memory_order_relaxed); }
+std::uint64_t peak_bytes()    noexcept { return S().bytes_peak.load(std::memory_order_relaxed); }
+std::uint64_t total_allocs()  noexcept { return S().allocs_total.load(std::memory_order_relaxed); }
+std::uint64_t active_allocs() noexcept { return S().allocs_active.load(std::memory_order_relaxed); }
+
+// Dump de fugas
+void dump_leaks_to_stdout() noexcept {
+    auto& st = S();
+    std::lock_guard<std::mutex> lk(st.mtx);
+    if (st.live.empty()) {
+        std::printf("[memprof] No leaks.\n");
+        return;
+    }
+    std::printf("[memprof] Leaks (%zu):\n", st.live.size());
+    for (const auto& [ptr, ai] : st.live) {
+        std::printf("  ptr=%p size=%zu file=%s line=%d type=%s ts=%llu %s\n",
+            ptr, ai.size,
+            ai.file ? ai.file : "(?)",
+            ai.line,
+            ai.type ? ai.type : "(?)",
+            (unsigned long long)ai.timestamp_ns,
+            ai.is_array ? "[array]" : "[scalar]"
+        );
+    }
+}
+
+} // namespace memprof
+
+
+--------------------------------------------------
+
+broker_client_example.cpp:
+--------------------------
+#include <iostream>
+#include "BrokerClient.h"
+
+int main() {
+    BrokerClient client;
+    client.configure("127.0.0.1", 5000, "TEST-GUI");
+
+    if (!client.connect()) {
+        std::cerr << "Error conectando al broker\n";
+        return 1;
+    }
+    if (!client.subscribe("MEMORY_UPDATE")) {
+        std::cerr << "Error suscribiéndose\n";
+        return 1;
+    }
+
+    std::cout << "Esperando 10 eventos...\n";
+    for (int i = 0; i < 10; ++i) {
+        std::string json = client.receiveEvent();
+        if (json.empty()) {
+            std::cerr << "Conexión cerrada o error al recibir.\n";
+            break;
+        }
+        std::cout << "Evento " << i << ": " << json << "\n";
+    }
+
+    client.disconnect();
+    return 0;
+}
+
+
+--------------------------------------------------
+
+metrics_stream.cpp:
+-------------------
+#include <iostream>
+#include <chrono>
+#include <thread>
+
+#include "BrokerClient.h"
+#include "MetricsCalculator.h"
+
+int main() {
+    BrokerClient client;
+    client.configure("127.0.0.1", 5000, "GUI-METRICS");
+    if (!client.connect()) {
+        std::cerr << "[metrics_stream] No se pudo conectar al broker.\n";
+        return 1;
+    }
+    if (!client.subscribe("MEMORY_UPDATE")) {
+        std::cerr << "[metrics_stream] Falló la suscripción a MEMORY_UPDATE.\n";
+        return 1;
+    }
+
+    MetricsCalculator calc;
+    calc.setLeakThresholdMs(30000); // 30s por defecto
+
+    std::cout << "[metrics_stream] Esperando eventos...\n";
+
+    uint64_t count = 0;
+    const uint64_t print_every = 50; // imprime cada 50 eventos
+
+    while (client.isConnected()) {
+        std::string ev = client.receiveEvent(); // bloqueante
+        if (ev.empty()) {
+            std::cerr << "[metrics_stream] Conexión cerrada o error recibiendo.\n";
+            break;
+        }
+        calc.processEvent(ev);
+        if (++count % print_every == 0) {
+            auto snap = calc.getSnapshot();
+            std::cout << "[metrics_stream] " << snap.toJSON() << "\n";
+        }
+    }
+
+    return 0;
+}
+
+
+--------------------------------------------------
+
+BrokerClient.h:
+---------------
+#pragma once
+#include <string>
+#include <atomic>
+#include <mutex>
+#include "NetUtils.h"
+
+class BrokerClient {
+public:
+    BrokerClient();
+    ~BrokerClient();
+
+    // Configuración
+    void configure(const std::string& host, uint16_t port, const std::string& appId);
+
+    // Conexión y suscripción
+    bool connect();
+    bool subscribe(const std::string& topic);
+    void disconnect();
+
+    // Recepción de eventos (bloquea hasta recibir una línea)
+    // Retorna el JSON (payload) o string vacío si hay error/desconexión.
+    std::string receiveEvent();
+
+    // Estado
+    bool isConnected() const;
+
+private:
+    socket_t sock_;
+    std::string host_;
+    uint16_t port_;
+    std::string appId_;
+    std::atomic<bool> connected_;
+    mutable std::mutex mtx_;
+    net::WSAInit wsa_; // RAII (no-op en Linux)
+
+    // Helpers internos (NO reimplementan utilidades, solo orquestan)
+    bool sendLineLocked_(const std::string& line);
+    bool recvLineLocked_(std::string& out);
+};
+
+
+--------------------------------------------------
+
+LegacyBridge.h:
+---------------
+#pragma once
+#include <string>
+
+namespace legacy_bridge {
+
+    // Configura el destino (broker) e instala el sink de legacy.
+    // Llama a esto al inicio de la app que quieras perfilar (NO el servidor).
+    void install_socket_sink(const std::string& ip, unsigned short port, const std::string& appId);
+
+} // namespace legacy_bridge
+
+
+--------------------------------------------------
+
+MemoryTracker.h:
+----------------
+#pragma once
+#include <string>
+#include <mutex>
+#include "Protocol.h"
+#include "NetUtils.h"
+
+class ProfilerClient {
+public:
+    static ProfilerClient& instance();
+
+    // Configura destino y appId. Cierra la conexión previa si existía.
+    void configure(const std::string& ip, uint16_t port, const std::string& appId);
+
+    // Publica usando una conexión PERSISTENTE (reconecta 1 vez si falla).
+    bool publish(const std::string& topic, const std::string& payload);
+
+    // Opcional: timeout de socket (ms) para futuras conexiones.
+    void set_timeout_ms(int ms) { timeout_ms_ = ms; }
+
+    ~ProfilerClient();
+
+private:
+    ProfilerClient() = default;
+    ProfilerClient(const ProfilerClient&) = delete;
+    ProfilerClient& operator=(const ProfilerClient&) = delete;
+
+    bool ensure_connected();   // crea y conecta si hace falta
+    void close_socket();       // cierra y deja listo para reconectar
+    bool set_timeouts();       // aplica SO_RCVTIMEO/SO_SNDTIMEO si se configuró
+
+    std::string ip_;
+    uint16_t    port_ = 0;
+    std::string appId_;
+
+#ifdef _WIN32
+    static constexpr socket_t INVALID_SOCK = INVALID_SOCKET;
+#else
+    static constexpr socket_t INVALID_SOCK = (socket_t)-1;
+#endif
+    socket_t    sock_ = INVALID_SOCK;
+    int         timeout_ms_ = 0;
+    std::mutex  m_;
+};
+
+
+--------------------------------------------------
+
+MetricsCalculator.h:
+--------------------
+#pragma once
+#include <string>
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
+#include <chrono>
+
+struct MetricsSnapshot {
+    double current_mb;      // Memoria actual en MB
+    uint64_t active_allocs; // Asignaciones activas (bloques vivos)
+    double leak_mb;         // Memory leaks (según umbral) en MB
+    double peak_mb;         // Pico histórico en MB
+    uint64_t total_allocs;  // Total de ALLOC procesados
+    uint64_t timestamp_ms;  // Marca de tiempo del snapshot (epoch ms)
+
+    std::string toJSON() const;
+};
+
+class MetricsCalculator {
+public:
+    MetricsCalculator();
+
+    // Procesamiento de eventos JSON ("ALLOC"/"FREE")
+    void processEvent(const std::string& jsonEvent);
+
+    // Métricas actuales (thread-safe)
+    MetricsSnapshot getSnapshot() const;
+
+    // Configuración de umbral de "leak" (en ms)
+    void setLeakThresholdMs(uint64_t ms);
+
+    // Reinicia estado y contadores
+    void reset();
+
+private:
+    struct AllocInfo {
+        uint64_t size = 0;
+        uint64_t timestamp_ns = 0; // ts del evento (ns)
+        std::string file;
+        int line = 0;
+        std::string type;
+        bool is_array = false;
+    };
+
+    // Estado
+    mutable std::mutex mtx_;
+    std::unordered_map<std::string, AllocInfo> live_allocs_; // ptr -> info
+
+    std::atomic<uint64_t> current_bytes_{0};
+    std::atomic<uint64_t> peak_bytes_{0};
+    std::atomic<uint64_t> active_allocs_{0};
+    std::atomic<uint64_t> total_allocs_{0};
+    std::atomic<uint64_t> leak_threshold_ms_{30000}; // 30s por defecto
+
+    // Helpers privados
+    void processAlloc(const std::string& ptr, uint64_t size, uint64_t ts_ns,
+                      const std::string& file, int line,
+                      const std::string& type, bool is_array);
+
+    void processFree(const std::string& ptr, uint64_t hinted_size);
+
+    uint64_t calculateLeakBytes() const;
+    static uint64_t nowMs();
+};
+
+
+--------------------------------------------------
+
+NetUtils.h:
+-----------
+#pragma once
+#include <string>
+
+// Tipos y macros cross-platform
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  using socket_t = SOCKET;
+#define CLOSESOCK closesocket
+#define IS_INVALID(s) ((s)==INVALID_SOCKET)
+#else
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+using socket_t = int;
+#define CLOSESOCK ::close
+#define IS_INVALID(s) ((s)<0)
+#endif
+
+namespace net {
+
+    // RAII para Winsock (no hace nada en Linux)
+    struct WSAInit {
+#ifdef _WIN32
+        WSAInit();
+        ~WSAInit();
+#else
+        WSAInit() = default;
+        ~WSAInit() = default;
+#endif
+    };
+
+    // Envía todo el buffer (bloqueante). Devuelve true si tuvo éxito.
+    bool sendAll(socket_t s, const void* data, size_t len);
+
+    // Lee hasta '\n' (bloqueante). Devuelve true si tuvo éxito.
+    bool recvLine(socket_t s, std::string& out);
+
+} // namespace net
+
+
+--------------------------------------------------
+
+Protocol.h:
+-----------
+#pragma once
+#include <string>
+#include <vector>
+#include <deque>
+#include <unordered_map>
+#include <optional>
+
+namespace protocol {
+
+    // Percent-encode solo los caracteres conflictivos con el pipe-protocol.
+    std::string encode(const std::string& in);
+    std::string decode(const std::string& in);
+
+    // Divide línea de protocolo en tokens (maneja %xx).
+    std::vector<std::string> split(const std::string& line);
+
+    // Estructura de petición genérica: COMANDO + args.
+    struct Request {
+        std::string command;
+        std::vector<std::string> args;
+    };
+
+    std::optional<Request> parseLine(const std::string& line);
+
+    // Helpers de respuesta
+    inline std::string ok(const std::string& msg = {}) {
+        return msg.empty() ? "OK\n" : "OK|" + encode(msg) + "\n";
+    }
+    inline std::string error(const std::string& msg) {
+        return "ERROR|" + encode(msg) + "\n";
+    }
+
+    // Tópicos del profiler
+    static const char* TOPIC_MEMORY_UPDATE = "MEMORY_UPDATE";
+    static const char* TOPIC_ALLOCATION    = "ALLOCATION";
+    static const char* TOPIC_DEALLOCATION  = "DEALLOCATION";
+    static const char* TOPIC_LEAK_DETECTED = "LEAK_DETECTED";
+    static const char* TOPIC_FILE_STATS    = "FILE_STATS";
+
+} // namespace protocol
+
+
+--------------------------------------------------
+
+SocketServer.h:
+---------------
+#pragma once
+#include <string>
+#include <thread>
+#include <atomic>
+#include <unordered_map>
+#include <unordered_set>
+#include <deque>
+#include <mutex>
+#include <optional>
+#include "Protocol.h"
+#include "NetUtils.h"   // <— usar utilidades comunes
+
+// Broker pub/sub con SUBSCRIBE/UNSUBSCRIBE/PUBLISH/RECEIVE
+class SocketServer {
+public:
+    explicit SocketServer(std::string ip, uint16_t port);
+    ~SocketServer();
+
+    void start();
+    void stop();
+
+private:
+    void acceptLoop();
+    void clientLoop(socket_t clientSock, std::string clientAddr);
+    std::string process(const protocol::Request& req, const std::string& peerId);
+
+    // Pub/sub
+    std::unordered_map<std::string, std::unordered_set<std::string>> subscribers_;
+    std::unordered_map<std::string, std::unordered_map<std::string, std::deque<std::string>>> queues_;
+    std::unordered_map<std::string, socket_t> liveSockets_;
+
+    std::mutex mtx_;
+
+    // Red
+    net::WSAInit wsa_;
+    std::string ip_;
+    uint16_t port_;
+    socket_t listenSock_{};
+    std::atomic<bool> running_{false};
+};
+
+
+--------------------------------------------------
+
+BrokerClient.cpp:
+-----------------
+#include "BrokerClient.h"
+#include "Protocol.h"
+#include "NetUtils.h"
+
+#include <cstring>   // std::strlen
+#include <iostream>  // opcional para logs
+
+#ifdef _WIN32
+// NetUtils.h ya incluye headers de WinSock
+#else
+// NetUtils.h ya incluye <sys/socket.h>, <arpa/inet.h>, <unistd.h>
+#endif
+
+// Sentinel portable
+#ifdef _WIN32
+static constexpr socket_t INVALID_SOCK = INVALID_SOCKET;
+#else
+static constexpr socket_t INVALID_SOCK = (socket_t)-1;
+#endif
+
+BrokerClient::BrokerClient()
+    : sock_(INVALID_SOCK),
+      host_("127.0.0.1"),
+      port_(5000),
+      appId_("APP"),
+      connected_(false) {}
+
+BrokerClient::~BrokerClient() {
+    disconnect();
+}
+
+void BrokerClient::configure(const std::string& host, uint16_t port, const std::string& appId) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    host_  = host;
+    port_  = port;
+    appId_ = appId;
+}
+
+bool BrokerClient::connect() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (connected_) return true;
+
+    // Crear socket
+    socket_t s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (IS_INVALID(s)) {
+        connected_ = false;
+        return false;
+    }
+
+    // Preparar dirección
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(port_);
+    if (::inet_pton(AF_INET, host_.c_str(), &addr.sin_addr) != 1) {
+        CLOSESOCK(s);
+        connected_ = false;
+        return false;
+    }
+
+    // Conectar
+    if (::connect(s, (sockaddr*)&addr, sizeof(addr)) < 0) {
+        CLOSESOCK(s);
+        connected_ = false;
+        return false;
+    }
+
+    // Éxito
+    sock_ = s;
+    connected_ = true;
+    return true;
+}
+
+bool BrokerClient::sendLineLocked_(const std::string& line) {
+    // Asume mtx_ tomado
+    if (!connected_) return false;
+    return net::sendAll(sock_, line.c_str(), line.size());
+}
+
+bool BrokerClient::recvLineLocked_(std::string& out) {
+    // Asume mtx_ tomado
+    if (!connected_) return false;
+    return net::recvLine(sock_, out);
+}
+
+bool BrokerClient::subscribe(const std::string& topic) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (!connected_) return false;
+
+    // SUBSCRIBE|topic|appId\n  (respetando percent-encoding)
+    std::string line = std::string("SUBSCRIBE|")
+        + protocol::encode(topic) + "|"
+        + protocol::encode(appId_) + "\n";
+
+    if (!sendLineLocked_(line)) {
+        connected_ = false;
+        CLOSESOCK(sock_);
+        sock_ = INVALID_SOCK;
+        return false;
+    }
+
+    std::string resp;
+    if (!recvLineLocked_(resp)) {
+        connected_ = false;
+        CLOSESOCK(sock_);
+        sock_ = INVALID_SOCK;
+        return false;
+    }
+
+    // Aceptamos "OK\n" o "OK|mensaje\n"
+    if (resp.rfind("OK", 0) == 0) {
+        return true;
+    }
+
+    // Si no fue OK, cerramos por simplicidad (puedes optar por mantener vivo)
+    connected_ = false;
+    CLOSESOCK(sock_);
+    sock_ = INVALID_SOCK;
+    return false;
+}
+
+std::string BrokerClient::receiveEvent() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (!connected_) return {};
+
+    std::string line;
+    if (!recvLineLocked_(line)) {
+        // Conexión rota / cerrada
+        connected_ = false;
+        if (!IS_INVALID(sock_)) {
+            CLOSESOCK(sock_);
+            sock_ = INVALID_SOCK;
+        }
+        return {};
+    }
+
+    // Esperamos líneas del tipo:
+    //   OK|<payload_codificado>\n
+    //   (o eventualmente "ERROR|..."). Solo retornamos payload si es OK.
+    if (line.rfind("OK|", 0) == 0) {
+        // Extraer todo lo que viene tras el primer '|'
+        // Nota: la línea trae '\n' al final; el decode del Protocol maneja %xx,
+        // y el split elimina el '\n' del último token si corresponde.
+        // Aquí haremos un split ligero usando helpers existentes.
+        // Como queremos el JSON crudo, usamos split() para obtener tokens seguros.
+        auto tokens = protocol::split(line);
+        // tokens[0] = "OK", tokens[1] = payload (posible JSON codificado)
+        if (tokens.size() >= 2) {
+            return protocol::decode(tokens[1]);
+        } else {
+            // Es un "OK" sin payload (no debería pasar para eventos push),
+            // devolvemos vacío para no romper al caller.
+            return {};
+        }
+    } else {
+        // No es OK: ignoramos y devolvemos vacío.
+        return {};
+    }
+}
+
+void BrokerClient::disconnect() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (connected_) {
+        connected_ = false;
+    }
+    if (!IS_INVALID(sock_)) {
+        CLOSESOCK(sock_);
+        sock_ = INVALID_SOCK;
+    }
+}
+
+bool BrokerClient::isConnected() const {
+    return connected_.load();
+}
+
+
+--------------------------------------------------
+
+MemoryTracker.cpp:
+------------------
+#include "MemoryTracker.h"
+#include <iostream>
+#include <cstring>
+
+ProfilerClient::~ProfilerClient() { close_socket(); }
+
+ProfilerClient& ProfilerClient::instance() {
+    static ProfilerClient s;
+    return s;
+}
+
+void ProfilerClient::configure(const std::string& ip, uint16_t port, const std::string& appId) {
+    std::lock_guard<std::mutex> lk(m_);
+    ip_ = ip; port_ = port; appId_ = appId;
+    close_socket(); // forzar nueva conexión con la nueva config
+}
+
+bool ProfilerClient::publish(const std::string& topic, const std::string& payload) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (!ensure_connected()) return false;
+
+    std::string line = "PUBLISH|" + protocol::encode(topic)
+                     + "|" + protocol::encode(payload);
+    if (!appId_.empty()) line += "|" + protocol::encode(appId_);
+    line += "\n";
+
+    if (!net::sendAll(sock_, line.c_str(), line.size())) {
+        // Reintento 1: reconectar y volver a enviar
+        close_socket();
+        if (!ensure_connected()) return false;
+        if (!net::sendAll(sock_, line.c_str(), line.size())) {
+            close_socket();
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ProfilerClient::ensure_connected() {
+    if (!IS_INVALID(sock_)) return true;
+    if (ip_.empty() || port_ == 0) return false;
+
+    sock_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (IS_INVALID(sock_)) { sock_ = INVALID_SOCK; return false; }
+
+    sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port_);
+    if (::inet_pton(AF_INET, ip_.c_str(), &a.sin_addr) != 1) {
+        close_socket(); return false;
+    }
+    if (::connect(sock_, (sockaddr*)&a, sizeof(a)) < 0) {
+        close_socket(); return false;
+    }
+    (void)set_timeouts();
+    return true;
+}
+
+void ProfilerClient::close_socket() {
+    if (!IS_INVALID(sock_)) { CLOSESOCK(sock_); }
+#ifdef _WIN32
+    sock_ = INVALID_SOCKET;
+#else
+    sock_ = (socket_t)-1;
+#endif
+}
+
+bool ProfilerClient::set_timeouts() {
+    if (timeout_ms_ <= 0 || IS_INVALID(sock_)) return true;
+#ifdef _WIN32
+    DWORD tv = static_cast<DWORD>(timeout_ms_);
+    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+#else
+    timeval tv{};
+    tv.tv_sec  = timeout_ms_ / 1000;
+    tv.tv_usec = (timeout_ms_ % 1000) * 1000;
+    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+    return true;
+}
+
+
+--------------------------------------------------
+
+MetricsCalculator.cpp:
+----------------------
+#include "MetricsCalculator.h"
+
+#include <sstream>
+#include <iomanip>
+#include <cctype>
+#include <algorithm>
+
+// -------------------------------
+// Helpers locales para JSON simple
+// -------------------------------
+
+namespace {
+
+// avanza i para saltar espacios
+inline void skipSpaces(const std::string& s, size_t& i) {
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+}
+
+// extrae literal string: "...."
+bool parseJSONStringAt(const std::string& s, size_t& i, std::string& out) {
+    skipSpaces(s, i);
+    if (i >= s.size() || s[i] != '"') return false;
+    ++i; // salta comillas inicial
+    std::string acc;
+    while (i < s.size()) {
+        char c = s[i++];
+        if (c == '\\') {
+            if (i >= s.size()) break;
+            char e = s[i++];
+            // soporto escapes básicos
+            if (e == '"' || e == '\\' || e == '/') acc.push_back(e);
+            else if (e == 'b') acc.push_back('\b');
+            else if (e == 'f') acc.push_back('\f');
+            else if (e == 'n') acc.push_back('\n');
+            else if (e == 'r') acc.push_back('\r');
+            else if (e == 't') acc.push_back('\t');
+            else acc.push_back(e);
+        } else if (c == '"') {
+            out.swap(acc);
+            return true;
+        } else {
+            acc.push_back(c);
+        }
+    }
+    return false;
+}
+
+// busca `"field":` y deja i al inicio del valor
+bool seekFieldValue(const std::string& json, const std::string& field, size_t& i) {
+    const std::string quoted = "\"" + field + "\"";
+    size_t pos = json.find(quoted, i);
+    if (pos == std::string::npos) return false;
+    pos += quoted.size();
+    // saltar espacios y colon
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+    if (pos >= json.size() || json[pos] != ':') return false;
+    ++pos;
+    i = pos;
+    return true;
+}
+
+bool extractString(const std::string& json, const std::string& field, std::string& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    return parseJSONStringAt(json, i, out);
+}
+
+bool extractBool(const std::string& json, const std::string& field, bool& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    skipSpaces(json, i);
+    if (json.compare(i, 4, "true") == 0) { out = true;  return true; }
+    if (json.compare(i, 5, "false") == 0){ out = false; return true; }
+    return false;
+}
+
+bool extractUint64(const std::string& json, const std::string& field, uint64_t& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    skipSpaces(json, i);
+    // número (decimal) o "0x..." como string (algunos emisores envían ptr como string)
+    if (i < json.size() && json[i] == '"') {
+        // intentar leer string y luego parsear (por si viene "1234")
+        std::string tmp;
+        if (!parseJSONStringAt(json, i, tmp)) return false;
+        if (tmp.rfind("0x", 0) == 0 || tmp.rfind("0X", 0) == 0) {
+            // valor hexadecimal — convertir a uint64
+            char* endp = nullptr;
+            unsigned long long v = std::strtoull(tmp.c_str(), &endp, 16);
+            out = static_cast<uint64_t>(v);
+            return true;
+        } else {
+            // decimal en string
+            char* endp = nullptr;
+            unsigned long long v = std::strtoull(tmp.c_str(), &endp, 10);
+            out = static_cast<uint64_t>(v);
+            return true;
+        }
+    } else {
+        // número crudo
+        uint64_t v = 0;
+        bool any = false;
+        while (i < json.size() && std::isdigit(static_cast<unsigned char>(json[i]))) {
+            any = true;
+            v = v * 10 + static_cast<uint64_t>(json[i] - '0');
+            ++i;
+        }
+        if (!any) return false;
+        out = v;
+        return true;
+    }
+}
+
+// Permite leer un entero "line" que viene como número
+bool extractInt(const std::string& json, const std::string& field, int& out) {
+    uint64_t u = 0;
+    if (!extractUint64(json, field, u)) return false;
+    out = static_cast<int>(u);
+    return true;
+}
+
+} // namespace
+
+
+// -------------------------------
+// Métricas -> JSON
+// -------------------------------
+std::string MetricsSnapshot::toJSON() const {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2);
+    oss << "{"
+        << "\"current_mb\":"   << current_mb   << ","
+        << "\"active_allocs\":"<< active_allocs<< ","
+        << "\"leak_mb\":"      << leak_mb      << ","
+        << "\"peak_mb\":"      << peak_mb      << ","
+        << "\"total_allocs\":" << total_allocs << ","
+        << "\"timestamp_ms\":" << timestamp_ms
+        << "}";
+    return oss.str();
+}
+
+// -------------------------------
+// MetricsCalculator
+// -------------------------------
+MetricsCalculator::MetricsCalculator() = default;
+
+void MetricsCalculator::processAlloc(const std::string& ptr, uint64_t size, uint64_t ts_ns,
+                                     const std::string& file, int line,
+                                     const std::string& type, bool is_array)
+{
+    // Ajuste contadores atómicos
+    current_bytes_.fetch_add(size, std::memory_order_relaxed);
+    active_allocs_.fetch_add(1, std::memory_order_relaxed);
+    total_allocs_.fetch_add(1, std::memory_order_relaxed);
+
+    // Peak
+    uint64_t cur = current_bytes_.load(std::memory_order_relaxed);
+    uint64_t prev_peak = peak_bytes_.load(std::memory_order_relaxed);
+    while (cur > prev_peak && !peak_bytes_.compare_exchange_weak(prev_peak, cur, std::memory_order_relaxed)) {
+        // prev_peak actualizado por compare_exchange_weak
+    }
+
+    // Registrar bloque vivo
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        live_allocs_[ptr] = AllocInfo{ size, ts_ns, file, line, type, is_array };
+    }
+}
+
+void MetricsCalculator::processFree(const std::string& ptr, uint64_t hinted_size) {
+    uint64_t size_to_sub = 0;
+    bool found = false;
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto it = live_allocs_.find(ptr);
+        if (it != live_allocs_.end()) {
+            size_to_sub = it->second.size;
+            live_allocs_.erase(it);
+            found = true;
+        }
+    }
+
+    if (found) {
+        // Si el emisor envía el size en FREE y difiere, preferimos el registrado en ALLOC
+        current_bytes_.fetch_sub(size_to_sub, std::memory_order_relaxed);
+        active_allocs_.fetch_sub(1, std::memory_order_relaxed);
+        // peak no se reduce
+    } else {
+        // FREE huérfano: ignorar sin afectar contadores
+        (void)hinted_size;
+    }
+}
+
+void MetricsCalculator::processEvent(const std::string& jsonEvent) {
+    // Campos mínimos
+    std::string kind;
+    if (!extractString(jsonEvent, "kind", kind)) return;
+
+    if (kind == "ALLOC") {
+        std::string ptr; (void)ptr;
+        uint64_t size = 0, ts_ns = 0;
+        std::string file, type;
+        int line = 0; bool is_arr = false;
+
+        // ptr suele venir como string:
+        extractString(jsonEvent, "ptr", ptr);
+        extractUint64(jsonEvent, "size", size);
+        extractUint64(jsonEvent, "ts_ns", ts_ns);
+        extractString(jsonEvent, "file", file);
+        extractInt(jsonEvent, "line", line);
+        extractString(jsonEvent, "type", type);
+        extractBool(jsonEvent, "is_array", is_arr);
+
+        if (!ptr.empty() && size > 0) {
+            processAlloc(ptr, size, ts_ns, file, line, type, is_arr);
+        }
+    }
+    else if (kind == "FREE") {
+        std::string ptr; (void)ptr;
+        uint64_t size = 0;
+        extractString(jsonEvent, "ptr", ptr);
+        extractUint64(jsonEvent, "size", size); // puede venir, pero no es obligatorio
+        if (!ptr.empty()) {
+            processFree(ptr, size);
+        }
+    }
+    // otros "kind" se ignoran de momento
+}
+
+uint64_t MetricsCalculator::nowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+uint64_t MetricsCalculator::calculateLeakBytes() const {
+    const uint64_t now_ms = nowMs();
+    const uint64_t threshold_ns = leak_threshold_ms_.load(std::memory_order_relaxed) * 1000000ULL;
+
+    uint64_t leak = 0;
+    std::lock_guard<std::mutex> lk(mtx_);
+    for (const auto& kv : live_allocs_) {
+        const auto& info = kv.second;
+        uint64_t age_ns = (now_ms * 1000000ULL);
+        if (age_ns > info.timestamp_ns) {
+            age_ns -= info.timestamp_ns;
+            if (age_ns > threshold_ns) leak += info.size;
+        }
+    }
+    return leak;
+}
+
+MetricsSnapshot MetricsCalculator::getSnapshot() const {
+    MetricsSnapshot s;
+    const double MB = 1024.0 * 1024.0;
+
+    const uint64_t cur_b  = current_bytes_.load(std::memory_order_relaxed);
+    const uint64_t peak_b = peak_bytes_.load(std::memory_order_relaxed);
+
+    s.current_mb    = static_cast<double>(cur_b)  / MB;
+    s.peak_mb       = static_cast<double>(peak_b) / MB;
+    s.active_allocs = active_allocs_.load(std::memory_order_relaxed);
+    s.total_allocs  = total_allocs_.load(std::memory_order_relaxed);
+    s.timestamp_ms  = nowMs();
+
+    const uint64_t leak_b = calculateLeakBytes();
+    s.leak_mb = static_cast<double>(leak_b) / MB;
+
+    return s;
+}
+
+void MetricsCalculator::setLeakThresholdMs(uint64_t ms) {
+    leak_threshold_ms_.store(ms, std::memory_order_relaxed);
+}
+
+void MetricsCalculator::reset() {
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        live_allocs_.clear();
+    }
+    current_bytes_.store(0, std::memory_order_relaxed);
+    peak_bytes_.store(0, std::memory_order_relaxed);
+    active_allocs_.store(0, std::memory_order_relaxed);
+    total_allocs_.store(0, std::memory_order_relaxed);
+    // No tocamos leak_threshold_ms_
+}
+
+
+--------------------------------------------------
+
+NetUtils.cpp:
+-------------
+#include "NetUtils.h"
+#include <iostream>
+
+#ifdef _WIN32
+  #pragma comment(lib,"ws2_32.lib")
+#endif
+
+namespace net {
+
+#ifdef _WIN32
+    WSAInit::WSAInit() {
+        WSADATA wsaData{};
+        if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0) {
+            std::cerr << "WSAStartup failed\n";
+        }
+    }
+    WSAInit::~WSAInit() {
+        WSACleanup();
+    }
+#endif
+
+    bool sendAll(socket_t s, const void* data, size_t len) {
+        const char* p = static_cast<const char*>(data);
+        size_t total = 0;
+        while (total < len) {
+#ifdef _WIN32
+            int sent = ::send(s, p + total, static_cast<int>(len - total), 0);
+#else
+            ssize_t sent = ::send(s, p + total, len - total, 0);
+#endif
+            if (sent <= 0) return false;
+            total += static_cast<size_t>(sent);
+        }
+        return true;
+    }
+
+    bool recvLine(socket_t s, std::string& out) {
+        out.clear();
+        char c;
+        while (true) {
+#ifdef _WIN32
+            int n = ::recv(s, &c, 1, 0);
+#else
+            ssize_t n = ::recv(s, &c, 1, 0);
+#endif
+            if (n <= 0) return false;
+            out.push_back(c);
+            if (c == '\n') break;
+            if (out.size() > 65536) return false; // límite simple
+        }
+        return true;
+    }
+
+} // namespace net
+
+
+--------------------------------------------------
+
+Protocol.cpp:
+-------------
+#include "Protocol.h"
+#include <sstream>
+#include <iomanip>
+#include <cctype>
+
+namespace protocol {
+
+std::string encode(const std::string& in) {
+    std::ostringstream out;
+    out << std::uppercase << std::hex;
+    for (unsigned char c : in) {
+        if (c == '|' || c == '\n' || c == '%' || c == '\\') {
+            out << '%' << std::setw(2) << std::setfill('0') << int(c);
+        } else {
+            out << c;
+        }
+    }
+    return out.str();
+}
+
+static inline int hex2(int a, int b) {
+    auto val = [](int x)->int {
+        if (x >= '0' && x <= '9') return x - '0';
+        if (x >= 'A' && x <= 'F') return x - 'A' + 10;
+        if (x >= 'a' && x <= 'f') return x - 'a' + 10;
+        return -1;
+    };
+    int hi = val(a), lo = val(b);
+    if (hi < 0 || lo < 0) return -1;
+    return (hi << 4) | lo;
+}
+
+std::string decode(const std::string& in) {
+    std::string out; out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '%' && i + 2 < in.size()) {
+            int v = hex2(in[i+1], in[i+2]);
+            if (v >= 0) { out.push_back(static_cast<char>(v)); i += 2; }
+            else out.push_back(in[i]);
+        } else {
+            out.push_back(in[i]);
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> split(const std::string& line) {
+    std::vector<std::string> out;
+    size_t start = 0, pos;
+    while ((pos = line.find('|', start)) != std::string::npos) {
+        out.push_back(decode(line.substr(start, pos - start)));
+        start = pos + 1;
+    }
+    // último token (hasta fin o \n)
+    if (start < line.size()) {
+        std::string tail = line.substr(start);
+        // eliminar '\n' de cola si viniera en el último token
+        if (!tail.empty() && tail.back() == '\n') tail.pop_back();
+        out.push_back(decode(tail));
+    }
+    return out;
+}
+
+std::optional<Request> parseLine(const std::string& line) {
+    if (line.empty()) return std::nullopt;
+    auto tokens = split(line);
+    if (tokens.empty()) return std::nullopt;
+    Request r;
+    r.command = tokens[0];
+    tokens.erase(tokens.begin());
+    r.args = std::move(tokens);
+    return r;
+}
+
+} // namespace protocol
+
+
+--------------------------------------------------
+
+SocketServer.cpp:
+-----------------
+#include "SocketServer.h"
+#include "NetUtils.h"
+#include <iostream>
+#include <cstring>
+#include <chrono>
+
+#ifdef _WIN32
+  #pragma comment(lib,"ws2_32.lib")
+#endif
+
+SocketServer::SocketServer(std::string ip, uint16_t port)
+: ip_(std::move(ip)), port_(port) {
+#ifdef _WIN32
+    listenSock_ = INVALID_SOCKET;
+#else
+    listenSock_ = -1;
+#endif
+}
+
+SocketServer::~SocketServer() {
+    stop();
+}
+
+void SocketServer::start() {
+    if (running_.exchange(true)) return;
+
+    listenSock_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (IS_INVALID(listenSock_)) {
+        running_ = false;
+        throw std::runtime_error("No se pudo crear el socket de escucha");
+    }
+
+    int yes = 1;
+#ifdef _WIN32
+    setsockopt(listenSock_, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
+#else
+    setsockopt(listenSock_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#endif
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port_);
+    if (::inet_pton(AF_INET, ip_.c_str(), &addr.sin_addr) != 1) {
+        CLOSESOCK(listenSock_);
+        running_ = false;
+        throw std::runtime_error("IP inválida: " + ip_);
+    }
+    if (::bind(listenSock_, (sockaddr*)&addr, sizeof(addr)) < 0) {
+        CLOSESOCK(listenSock_);
+        running_ = false;
+        throw std::runtime_error("bind() falló");
+    }
+    if (::listen(listenSock_, 16) < 0) {
+        CLOSESOCK(listenSock_);
+        running_ = false;
+        throw std::runtime_error("listen() falló");
+    }
+
+    std::thread(&SocketServer::acceptLoop, this).detach();
+    std::cout << "Broker escuchando en " << ip_ << ":" << port_ << std::endl;
+}
+
+void SocketServer::stop() {
+    if (!running_.exchange(false)) return;
+    if (!IS_INVALID(listenSock_)) {
+        CLOSESOCK(listenSock_);
+#ifdef _WIN32
+        listenSock_ = INVALID_SOCKET;
+#else
+        listenSock_ = -1;
+#endif
+    }
+}
+
+void SocketServer::acceptLoop() {
+    while (running_) {
+        sockaddr_in cli{};
+#ifdef _WIN32
+        int len = sizeof(cli);
+#else
+        socklen_t len = sizeof(cli);
+#endif
+        socket_t cs = ::accept(listenSock_, (sockaddr*)&cli, &len);
+        if (IS_INVALID(cs)) {
+            if (!running_) break;
+            continue;
+        }
+        char buf[INET_ADDRSTRLEN]{};
+        inet_ntop(AF_INET, &cli.sin_addr, buf, sizeof(buf));
+        std::string peer = buf;
+
+        // LOG: cliente aceptado
+        std::cout << "[ACCEPT] " << peer << std::endl;
+
+        std::thread(&SocketServer::clientLoop, this, cs, peer).detach();
+    }
+}
+
+void SocketServer::clientLoop(socket_t clientSock, std::string clientAddr) {
+    std::string line;
+    std::string peerId = clientAddr; // se actualizará si llega un appId en SUBSCRIBE
+
+    while (running_) {
+        if (!net::recvLine(clientSock, line)) {
+            // LOG: desconexión
+            std::cout << "[DISCONNECT] " << clientAddr << std::endl;
+            break;
+        }
+
+        // LOG: línea recibida (incluye '\n')
+        std::cout << "[RX] " << clientAddr << " " << line;
+
+        auto reqOpt = protocol::parseLine(line);
+        if (!reqOpt) {
+            auto msg = protocol::error("Petición inválida");
+            std::cout << "[PARSE-ERR] " << clientAddr << " -> " << msg; // log del error enviado
+            net::sendAll(clientSock, msg.c_str(), msg.size());
+            continue;
+        }
+
+        auto resp = process(*reqOpt, peerId);
+
+        // LOG: respuesta enviada
+        std::cout << "[TX] " << clientAddr << " " << resp;
+
+        net::sendAll(clientSock, resp.c_str(), resp.size());
+
+        // Mantener socket vivo asociado a appId para push
+        if (reqOpt->command == "SUBSCRIBE" && reqOpt->args.size() >= 2) {
+            std::lock_guard<std::mutex> lock(mtx_);
+            peerId = reqOpt->args[1];
+            liveSockets_[peerId] = clientSock;
+        } else if (reqOpt->command == "UNSUBSCRIBE" && reqOpt->args.size() >= 2) {
+            std::lock_guard<std::mutex> lock(mtx_);
+            liveSockets_.erase(reqOpt->args[1]);
+        }
+    }
+
+    // limpiar socket saliente en mapa de sockets vivos
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        for (auto it = liveSockets_.begin(); it != liveSockets_.end();) {
+            if (it->second == clientSock) it = liveSockets_.erase(it);
+            else ++it;
+        }
+    }
+    CLOSESOCK(clientSock);
+}
+
+std::string SocketServer::process(const protocol::Request& req, const std::string& peerId) {
+    try {
+        if (req.command == "SUBSCRIBE") {
+            // SUBSCRIBE|topic|appId
+            if (req.args.size() < 2) return protocol::error("Faltan parámetros para SUBSCRIBE");
+            const auto& topic = req.args[0];
+            const auto& appId = req.args[1];
+            std::lock_guard<std::mutex> lock(mtx_);
+            subscribers_[topic].insert(appId);
+            queues_[topic];
+            queues_[topic][appId];
+
+            // LOG detallado
+            std::cout << "[SUBSCRIBE] topic=" << topic << " appId=" << appId << std::endl;
+
+            return protocol::ok("Suscripción exitosa");
+        }
+
+        if (req.command == "UNSUBSCRIBE") {
+            // UNSUBSCRIBE|topic|appId
+            if (req.args.size() < 2) return protocol::error("Faltan parámetros para UNSUBSCRIBE");
+            const auto& topic = req.args[0];
+            const auto& appId = req.args[1];
+            std::lock_guard<std::mutex> lock(mtx_);
+            if (!subscribers_.count(topic) || !subscribers_[topic].count(appId)) {
+                return protocol::error("No está suscrito al tema: " + topic);
+            }
+            subscribers_[topic].erase(appId);
+            if (queues_.count(topic)) queues_[topic].erase(appId);
+            liveSockets_.erase(appId);
+
+            // LOG detallado
+            std::cout << "[UNSUBSCRIBE] topic=" << topic << " appId=" << appId << std::endl;
+
+            return protocol::ok("Desuscripción exitosa");
+        }
+
+        if (req.command == "PUBLISH") {
+            // PUBLISH|topic|payload|appId
+            if (req.args.size() < 3) return protocol::error("Faltan parámetros para PUBLISH");
+            const auto& topic   = req.args[0];
+            const auto& payload = req.args[1];
+            const auto& appId   = req.args[2];
+
+            size_t pushed = 0;
+            size_t queued_for = 0;
+
+            std::lock_guard<std::mutex> lock(mtx_);
+            if (!subscribers_.count(topic) || subscribers_[topic].empty()) {
+                // LOG sin suscriptores
+                std::cout << "[PUBLISH] topic=" << topic << " from=" << appId
+                          << " queued_for=0 pushed=0 (sin suscriptores)" << std::endl;
+                return protocol::error("No hay suscriptores para el tema: " + topic);
+            }
+
+            queued_for = subscribers_[topic].size();
+            for (const auto& sub : subscribers_[topic]) {
+                queues_[topic][sub].push_back(payload);
+                if (auto itSock = liveSockets_.find(sub); itSock != liveSockets_.end()) {
+                    std::string pushLine = "OK|" + protocol::encode(payload) + "\n";
+                    net::sendAll(itSock->second, pushLine.c_str(), pushLine.size());
+                    ++pushed;
+                }
+            }
+
+            // LOG detallado
+            std::cout << "[PUBLISH] topic=" << topic
+                      << " from=" << appId
+                      << " queued_for=" << queued_for
+                      << " pushed=" << pushed << std::endl;
+
+            return protocol::ok("Mensaje publicado a " + std::to_string(pushed) + " suscriptores");
+        }
+
+        if (req.command == "RECEIVE") {
+            // RECEIVE|topic|appId
+            if (req.args.size() < 2) return protocol::error("Faltan parámetros para RECEIVE");
+            const auto& topic = req.args[0];
+            const auto& appId = req.args[1];
+            std::lock_guard<std::mutex> lock(mtx_);
+            if (!subscribers_.count(topic) || !subscribers_[topic].count(appId)) {
+                return protocol::error("No está suscrito al tema: " + topic);
+            }
+            auto& q = queues_[topic][appId];
+            if (q.empty()) return protocol::error("No hay mensajes en la cola");
+            std::string msg = q.front(); q.pop_front();
+
+            // LOG detallado
+            std::cout << "[RECEIVE] topic=" << topic
+                      << " appId=" << appId << " delivered_one" << std::endl;
+
+            return protocol::ok(msg);
+        }
+
+        // Atajos de profiler (tratan la línea como evento y la publican al topic homónimo)
+        if (req.command == protocol::TOPIC_MEMORY_UPDATE ||
+            req.command == protocol::TOPIC_ALLOCATION    ||
+            req.command == protocol::TOPIC_DEALLOCATION  ||
+            req.command == protocol::TOPIC_LEAK_DETECTED ||
+            req.command == protocol::TOPIC_FILE_STATS) {
+
+            if (req.args.empty()) return protocol::error("Faltan parámetros");
+            std::string payload;
+            payload.reserve(256);
+            payload += req.command;
+            for (auto& a : req.args) { payload += '|'; payload += a; }
+
+            std::string appId = req.args.back();
+            if (appId.size() < 8) appId = peerId;
+
+            size_t pushed = 0;
+            size_t subs = 0;
+
+            std::lock_guard<std::mutex> lock(mtx_);
+            const std::string topic = req.command;
+            subs = subscribers_[topic].size(); // 0 si nadie se suscribió aún
+            for (const auto& sub : subscribers_[topic]) {
+                queues_[topic][sub].push_back(payload);
+                if (auto itSock = liveSockets_.find(sub); itSock != liveSockets_.end()) {
+                    std::string pushLine = "OK|" + protocol::encode(payload) + "\n";
+                    net::sendAll(itSock->second, pushLine.c_str(), pushLine.size());
+                    ++pushed;
+                }
+            }
+
+            // LOG de evento de profiler
+            std::cout << "[EVENT] " << req.command
+                      << " subs=" << subs
+                      << " pushed=" << pushed << std::endl;
+
+            return protocol::ok("Evento " + req.command + " publicado a " + std::to_string(pushed));
+        }
+
+        return protocol::error("Comando desconocido: " + req.command);
+    } catch (const std::exception& ex) {
+        return protocol::error(std::string("Error interno: ") + ex.what());
+    }
+}
+
+
+--------------------------------------------------
+
+gui_http_server.cpp:
+--------------------
+#include <string>
+#include <thread>
+#include <atomic>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+#include <chrono>
+#include <cctype>
+#include <filesystem>
+#include <iomanip>  // <- importante
+#include "NetUtils.h"          // socket_t, CLOSESOCK, WSAInit
+#include "BrokerClient.h"      // cliente al broker
+#include "MetricsCalculator.h" // snapshot
+
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <arpa/inet.h>
+  #include <sys/socket.h>
+  #include <unistd.h>
+#endif
+
+// ===== Utilidades HTTP muy mínimas (sin dependencias) =====
+
+static std::string mime_for(const std::string& path) {
+    auto dot = path.find_last_of('.');
+    std::string ext = (dot == std::string::npos) ? "" : path.substr(dot + 1);
+    for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+    if (ext == "html" || ext == "htm") return "text/html; charset=utf-8";
+    if (ext == "js")   return "application/javascript; charset=utf-8";
+    if (ext == "css")  return "text/css; charset=utf-8";
+    if (ext == "json") return "application/json; charset=utf-8";
+    if (ext == "png")  return "image/png";
+    if (ext == "jpg" || ext == "jpeg") return "image/jpeg";
+    if (ext == "svg")  return "image/svg+xml";
+    if (ext == "ico")  return "image/x-icon";
+    return "application/octet-stream";
+}
+
+static bool read_file(const std::filesystem::path& p, std::string& out) {
+    std::ifstream ifs(p, std::ios::binary);
+    if (!ifs) return false;
+    std::ostringstream oss;
+    oss << ifs.rdbuf();
+    out = oss.str();
+    return true;
+}
+
+static void http_send_response(socket_t s, int code, const char* status,
+                               const char* content_type, const std::string& body) {
+    std::ostringstream head;
+    head << "HTTP/1.1 " << code << " " << status << "\r\n"
+         << "Content-Type: " << content_type << "\r\n"
+         << "Content-Length: " << body.size() << "\r\n"
+         << "Cache-Control: no-store\r\n"
+         << "Connection: close\r\n\r\n";
+    const auto header = head.str();
+    net::sendAll(s, header.data(), header.size());
+    if (!body.empty()) net::sendAll(s, body.data(), body.size());
+}
+
+static bool http_read_request(socket_t s, std::string& method, std::string& path) {
+    // Leer hasta "\r\n\r\n"
+    std::string req;
+    char buf[2048];
+    for (;;) {
+#ifdef _WIN32
+        int n = ::recv(s, buf, sizeof(buf), 0);
+#else
+        int n = ::recv(s, buf, sizeof(buf), 0);
+#endif
+        if (n <= 0) break;
+        req.append(buf, buf + n);
+        if (req.find("\r\n\r\n") != std::string::npos) break;
+        if (req.size() > 16384) break; // límite simple
+    }
+    // Primera línea: "GET /ruta HTTP/1.1"
+    auto pos = req.find("\r\n");
+    if (pos == std::string::npos) return false;
+    std::string line = req.substr(0, pos);
+
+    std::istringstream iss(line);
+    iss >> method >> path;
+    if (method.empty() || path.empty()) return false;
+    return true;
+}
+
+static std::string url_decode(const std::string& in) {
+    std::string out; out.reserve(in.size());
+    for (size_t i=0; i<in.size(); ++i) {
+        if (in[i] == '%' && i + 2 < in.size()) {
+            int v = 0;
+            std::istringstream(in.substr(i+1,2)) >> std::hex >> v;
+            out.push_back(static_cast<char>(v));
+            i += 2;
+        } else if (in[i] == '+') {
+            out.push_back(' ');
+        } else {
+            out.push_back(in[i]);
+        }
+    }
+    return out;
+}
+
+// Sanitiza el path: sin "..", sin backslashes, default a /index.html
+static std::filesystem::path safe_join(const std::filesystem::path& root, std::string path) {
+    if (path.empty() || path == "/") path = "/index.html";
+    // quitar querystring
+    if (auto q = path.find('?'); q != std::string::npos) path = path.substr(0, q);
+    path = url_decode(path);
+    // normalizar separadores
+    for (auto& c : path) if (c == '\\') c = '/';
+    // bloquear directory traversal
+    if (path.find("..") != std::string::npos) return {};
+    // quitar prefijo '/'
+    if (!path.empty() && path.front() == '/') path.erase(0, 1);
+    return root / path;
+}
+
+// ===== Hilo que bombea eventos del broker hacia MetricsCalculator =====
+
+struct PumpConfig {
+    std::string host = "127.0.0.1";
+    uint16_t    port = 5000;
+    std::string app  = "GUI-HTTP";
+    std::string topic= "MEMORY_UPDATE";
+};
+
+static void broker_pump_thread(const PumpConfig cfg, MetricsCalculator* calc, std::atomic<bool>* stop_flag) {
+    BrokerClient client;
+    client.configure(cfg.host, cfg.port, cfg.app);
+
+    while (!stop_flag->load()) {
+        if (!client.isConnected()) {
+            if (client.connect() && client.subscribe(cfg.topic)) {
+                std::cerr << "[gui_http] Suscrito a " << cfg.topic << "\n";
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                continue;
+            }
+        }
+        std::string ev = client.receiveEvent(); // bloqueante
+        if (ev.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+        calc->processEvent(ev);
+    }
+}
+
+// ===== Servidor HTTP principal =====
+
+int main(int argc, char** argv) {
+    net::WSAInit wsa; // RAII para Windows
+
+    // Parámetros por defecto
+    uint16_t http_port = 8080;
+    std::filesystem::path static_dir = "../gui"; // relativo al build dir
+    PumpConfig pump;
+
+    // Parseo simple de args: --port=8080 --static-dir=C:\...\gui --host=127.0.0.1 --bport=5000 --app=GUI-HTTP
+    for (int i=1; i<argc; ++i) {
+        std::string a = argv[i];
+        auto getv = [&](const char* key)->std::string {
+            auto p = a.find('=');
+            return (p==std::string::npos) ? "" : a.substr(p+1);
+        };
+        if (a.rfind("--port=",0)==0) http_port = static_cast<uint16_t>(std::stoi(getv("--port=")));
+        else if (a.rfind("--static-dir=",0)==0) static_dir = getv("--static-dir=");
+        else if (a.rfind("--host=",0)==0) pump.host = getv("--host=");
+        else if (a.rfind("--bport=",0)==0) pump.port = static_cast<uint16_t>(std::stoi(getv("--bport=")));
+        else if (a.rfind("--app=",0)==0) pump.app = getv("--app=");
+    }
+
+    // Normaliza static_dir (absoluta)
+    try { static_dir = std::filesystem::weakly_canonical(static_dir); } catch(...) {}
+    std::cerr << "[gui_http] Static dir: " << static_dir.string() << "\n";
+    std::cerr << "[gui_http] Broker: " << pump.host << ":" << pump.port << " app=" << pump.app << "\n";
+    std::cerr << "[gui_http] HTTP:   127.0.0.1:" << http_port << "\n";
+
+    // Estado de métricas
+    MetricsCalculator calc;
+
+    // Arranca hilo de broker → métricas
+    std::atomic<bool> stop{false};
+    std::thread th_pump(broker_pump_thread, pump, &calc, &stop);
+
+    // Socket escucha HTTP
+    socket_t srv = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (IS_INVALID(srv)) {
+        std::cerr << "[gui_http] ERROR: no pude crear socket HTTP\n";
+        stop.store(true);
+        th_pump.join();
+        return 1;
+    }
+
+    // Reuseaddr
+    int yes = 1;
+#ifdef _WIN32
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
+#else
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#endif
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(http_port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+    if (::bind(srv, (sockaddr*)&addr, sizeof(addr)) < 0) {
+        std::cerr << "[gui_http] ERROR: bind puerto " << http_port << "\n";
+        CLOSESOCK(srv);
+        stop.store(true);
+        th_pump.join();
+        return 1;
+    }
+    if (::listen(srv, 16) < 0) {
+        std::cerr << "[gui_http] ERROR: listen\n";
+        CLOSESOCK(srv);
+        stop.store(true);
+        th_pump.join();
+        return 1;
+    }
+
+    std::cerr << "[gui_http] Sirviendo HTTP en http://127.0.0.1:" << http_port << "/ (ENTER para salir)\n";
+
+    // Hilo para leer ENTER y salir
+    std::thread th_quit([&]{
+        (void)getchar();
+        stop.store(true);
+#ifdef _WIN32
+        ::closesocket(srv);
+#else
+        ::shutdown(srv, SHUT_RDWR);
+        ::close(srv);
+#endif
+    });
+
+    // Loop de aceptación
+    while (!stop.load()) {
+        sockaddr_in cli{}; socklen_t clen = sizeof(cli);
+        socket_t c = ::accept(srv, (sockaddr*)&cli, &clen);
+        if (IS_INVALID(c)) {
+            if (stop.load()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+
+        // Manejo por conexión (sin threads por simplicidad, es rápido)
+        std::string method, path;
+        if (!http_read_request(c, method, path)) {
+            http_send_response(c, 400, "Bad Request", "text/plain; charset=utf-8", "Bad Request");
+            CLOSESOCK(c);
+            continue;
+        }
+
+        if (method != "GET") {
+            http_send_response(c, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Only GET");
+            CLOSESOCK(c);
+            continue;
+        }
+
+        if (path == "/metrics") {
+            // Construye el JSON a partir del snapshot
+            MetricsSnapshot s = calc.getSnapshot();
+            std::ostringstream oss;
+            oss << std::fixed << std::setprecision(2);
+            oss << "{"
+                << "\"current_mb\":"    << s.current_mb    << ","
+                << "\"active_allocs\":" << s.active_allocs << ","
+                << "\"leak_mb\":"       << s.leak_mb       << ","
+                << "\"peak_mb\":"       << s.peak_mb       << ","
+                << "\"total_allocs\":"  << s.total_allocs  << ","
+                << "\"timestamp_ms\":"  << s.timestamp_ms  << ","
+                << "\"ok\":true,"
+                << "\"source\":\"MEMORY_UPDATE\""
+                << "}";
+            std::string body = oss.str();
+            http_send_response(c, 200, "OK", "application/json; charset=utf-8", body);
+            CLOSESOCK(c);
+            continue;
+        }
+
+        // Servir archivo estático
+        std::filesystem::path full = safe_join(static_dir, path);
+        std::string body;
+        if (full.empty() || !read_file(full, body)) {
+            http_send_response(c, 404, "Not Found", "text/plain; charset=utf-8", "404 Not Found");
+            CLOSESOCK(c);
+            continue;
+        }
+        const std::string ctype = mime_for(full.string());
+        http_send_response(c, 200, "OK", ctype.c_str(), body);
+        CLOSESOCK(c);
+    }
+
+    if (th_pump.joinable()) th_pump.join();
+    if (th_quit.joinable()) th_quit.join();
+    return 0;
+}
+
+
+--------------------------------------------------
+
+main.cpp:
+---------
+#include "SocketServer.h"
+#include <iostream>
+
+int main(int argc, char** argv) {
+    try {
+        std::string ip = "127.0.0.1";
+        uint16_t port = 5000;
+        if (argc >= 2) ip = argv[1];
+        if (argc >= 3) port = static_cast<uint16_t>(std::stoi(argv[2]));
+
+        SocketServer server(ip, port);
+        server.start();
+
+        std::cout << "Presiona ENTER para salir..." << std::endl;
+        std::string dummy;
+        std::getline(std::cin, dummy);
+
+        server.stop();
+        return 0;
+    } catch (const std::exception& ex) {
+        std::cerr << "Fallo fatal: " << ex.what() << std::endl;
+        return 1;
+    }
+}
+
+
+--------------------------------------------------
+
+test_metrics.cpp:
+-----------------
+#include <cassert>
+#include <iostream>
+#include <thread>    // para std::this_thread
+#include <chrono>    // para std::chrono::milliseconds
+#include "MetricsCalculator.h"
+
+
+int main() {
+    MetricsCalculator calc;
+    calc.setLeakThresholdMs(1); // umbral muy bajo para facilitar pruebas de leak
+
+    // Simular dos ALLOC y un FREE
+    calc.processEvent(R"({
+        "kind":"ALLOC","ptr":"0x123","size":1024,
+        "file":"a.cpp","line":10,"type":"int","is_array":false,
+        "ts_ns": 1000000, "thread": 1
+    })");
+    calc.processEvent(R"({
+        "kind":"ALLOC","ptr":"0x456","size":2048,
+        "file":"b.cpp","line":20,"type":"char[]","is_array":true,
+        "ts_ns": 2000000, "thread": 2
+    })");
+    calc.processEvent(R"({
+        "kind":"FREE","ptr":"0x123","size":1024,
+        "file":"a.cpp","line":10,"type":"int","is_array":false,
+        "ts_ns": 3000000, "thread": 1
+    })");
+
+    auto snap = calc.getSnapshot();
+    std::cout << "Snapshot: " << snap.toJSON() << "\n";
+
+    // Comprobaciones (tolerancia por representación en MB)
+    // Vivo: solo 0x456 (2048 bytes)
+    assert(snap.active_allocs == 1);
+    assert(snap.total_allocs  == 2);
+
+    // current_mb ≈ 2048 / (1024*1024) ≈ 0.00195 MB
+    const double expected_cur_mb = 2048.0 / (1024.0 * 1024.0);
+    assert(std::abs(snap.current_mb - expected_cur_mb) < 1e-6);
+
+    // peak al menos el total tras el segundo ALLOC: (1024 + 2048) bytes
+    const double expected_peak_mb = (1024.0 + 2048.0) / (1024.0 * 1024.0);
+    assert(snap.peak_mb + 1e-6 >= expected_peak_mb);
+
+    // Espera un poquito para que supere el umbral de leak y vuelva a tomar snapshot
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    auto snap2 = calc.getSnapshot();
+    // leak_mb debería contar 0x456 si ya pasó el umbral
+    assert(snap2.leak_mb >= expected_cur_mb - 1e-6);
+
+    std::cout << "OK\n";
+    return 0;
+}
+
+
+--------------------------------------------------
+
+test_socket.cpp:
+----------------
+// tests/test_socket.cpp
+// Test interactivo con menú: SUBSCRIBE / PUBLISH / LEGACY-BRIDGE
+
+#include <iostream>
+#include <string>
+#include <vector>
+#include <thread>
+#include <chrono>
+#include <atomic>
+#include <cstring>
+#include <cstdint>
+#include <csignal>
+#include <cstdio>       // std::snprintf
+#include <mutex>
+#include <filesystem>
+
+#include "Protocol.h"
+#include "MemoryTracker.h"  // ProfilerClient (SDK)
+#include "NetUtils.h"
+#include "LegacyBridge.h"   // instalar sink legacy -> broker
+
+// ===== Consola UTF-8 en Windows (opcional) =====
+#ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
+  #define NOMINMAX
+  #endif
+  #include <windows.h>
+  static void setup_utf8_console() {
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+  }
+#else
+  static void setup_utf8_console() {}
+#endif
+
+#ifdef _WIN32
+  constexpr socket_t INVALID_SOCK = INVALID_SOCKET;
+#else
+  constexpr socket_t INVALID_SOCK = (socket_t)-1;
+#endif
+
+// ===== Señal de salida segura =====
+static std::atomic<bool> g_running{true};
+static void on_sigint(int) { g_running = false; }
+
+// ===== Helpers red =====
+static socket_t connect_to(const std::string& ip, uint16_t port) {
+  socket_t s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (IS_INVALID(s)) return INVALID_SOCK;
+  sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port);
+  if (::inet_pton(AF_INET, ip.c_str(), &a.sin_addr) != 1) { CLOSESOCK(s); return INVALID_SOCK; }
+  if (::connect(s, (sockaddr*)&a, sizeof(a)) < 0)          { CLOSESOCK(s); return INVALID_SOCK; }
+  return s;
+}
+static bool send_line(socket_t s, const std::string& line) {
+  return net::sendAll(s, line.c_str(), line.size());
+}
+
+// ===== Auto-lanzar broker si no está (Windows) =====
+#ifdef _WIN32
+static bool ensure_broker_running(const std::string& host, uint16_t port, const char* argv0) {
+  socket_t s = connect_to(host, port);
+  if (!IS_INVALID(s)) { CLOSESOCK(s); return true; }
+  std::filesystem::path exeDir = std::filesystem::path(argv0).parent_path();
+  std::filesystem::path serverPath = exeDir / "memory_profiler_server.exe";
+  if (!std::filesystem::exists(serverPath)) return false;
+  std::string cmd = "\"" + serverPath.string() + "\" " + host + " " + std::to_string(port);
+  STARTUPINFOA si{}; si.cb = sizeof(si); PROCESS_INFORMATION pi{};
+  if (!CreateProcessA(NULL, cmd.data(), NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, exeDir.string().c_str(), &si, &pi))
+    return false;
+  CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  s = connect_to(host, port);
+  if (!IS_INVALID(s)) { CLOSESOCK(s); return true; }
+  return false;
+}
+#endif
+
+// ===== Estado de la app =====
+struct AppState {
+  std::string host = "127.0.0.1";
+  uint16_t    port = 5000;
+  std::string topic = protocol::TOPIC_MEMORY_UPDATE;
+  std::string appId = "APP-1";
+
+  // Suscriptor
+  std::atomic<bool> sub_running{false};
+  socket_t sub_sock = INVALID_SOCK;
+  std::thread sub_thread;
+
+  // Bridge
+  std::atomic<bool> bridge_installed{false};
+
+  std::mutex m; // proteger sub_sock
+};
+static AppState G;
+
+// ===== Suscripción (start/stop) =====
+static bool start_subscriber() {
+  std::lock_guard<std::mutex> lk(G.m);
+  if (G.sub_running) { std::cout << "Ya estás suscrito.\n"; return true; }
+  G.sub_sock = connect_to(G.host, G.port);
+  if (IS_INVALID(G.sub_sock)) { std::cout << "[sub] no se pudo conectar\n"; return false; }
+
+  std::string line = std::string("SUBSCRIBE|") + protocol::encode(G.topic) + "|" + protocol::encode("GUI-1") + "\n";
+  if (!send_line(G.sub_sock, line)) { std::cout << "[sub] fallo send\n"; CLOSESOCK(G.sub_sock); G.sub_sock = INVALID_SOCK; return false; }
+
+  std::string resp;
+  if (!net::recvLine(G.sub_sock, resp)) { std::cout << "[sub] sin respuesta\n"; CLOSESOCK(G.sub_sock); G.sub_sock = INVALID_SOCK; return false; }
+  std::cout << "[sub] resp: " << resp << "\n";
+  if (resp.rfind("OK", 0) != 0) { CLOSESOCK(G.sub_sock); G.sub_sock = INVALID_SOCK; return false; }
+
+  G.sub_running = true;
+  G.sub_thread = std::thread([]{
+    std::string r;
+    while (G.sub_running && net::recvLine(G.sub_sock, r)) {
+      if (r.rfind("PUBLISH|", 0) == 0) std::cout << "[RX] " << r << "\n";
+      r.clear();
+    }
+    std::lock_guard<std::mutex> lk(G.m);
+    if (!IS_INVALID(G.sub_sock)) { CLOSESOCK(G.sub_sock); G.sub_sock = INVALID_SOCK; }
+    G.sub_running = false;
+  });
+  return true;
+}
+static void stop_subscriber() {
+  std::thread th;
+  {
+    std::lock_guard<std::mutex> lk(G.m);
+    if (!G.sub_running) return;
+    G.sub_running = false;
+    if (!IS_INVALID(G.sub_sock)) { CLOSESOCK(G.sub_sock); G.sub_sock = INVALID_SOCK; }
+    th = std::move(G.sub_thread);
+  }
+  if (th.joinable()) th.join();
+}
+
+// ===== Publicar ejemplos =====
+static std::string make_sample_json(const char* kind, std::size_t bytes, int iter) {
+  char buf[512];
+  auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+  auto ns  = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+
+  // is_array: 1 si "ALLOC", 0 si no
+  int is_array = (std::string(kind) == "ALLOC") ? 1 : 0;
+
+  std::snprintf(buf, sizeof(buf),
+    "{\"kind\":\"%s\",\"ptr\":\"0x%08X\",\"size\":%zu,"
+    "\"file\":\"\",\"line\":0,\"type\":\"\",\"is_array\":%d,"
+    "\"ts_ns\":%lld,\"thread\":%lld}",
+    kind, 0xDEAD0000 + iter, bytes, is_array,
+    (long long)ns, (long long)std::hash<std::thread::id>{}(std::this_thread::get_id()));
+  return std::string(buf);
+}
+static void publish_sdk() {
+  auto j1 = make_sample_json("ALLOC", 256, 1);
+  auto j2 = make_sample_json("FREE",    0, 2);
+  ProfilerClient::instance().configure(G.host, G.port, G.appId);
+  bool a = ProfilerClient::instance().publish(G.topic, j1);
+  bool b = ProfilerClient::instance().publish(G.topic, j2);
+  std::cout << "[pub SDK] " << (a && b ? "OK" : "FALLO") << "\n";
+}
+static void publish_raw() {
+  socket_t s = connect_to(G.host, G.port);
+  if (IS_INVALID(s)) { std::cout << "[pub raw] no conecta\n"; return; }
+  for (auto& j : { make_sample_json("ALLOC", 64, 3), make_sample_json("FREE", 0, 4) }) {
+    std::string line = std::string("PUBLISH|") + protocol::encode(G.topic) + "|" + protocol::encode(j) + "|" + protocol::encode(G.appId) + "\n";
+    if (!send_line(s, line)) { std::cout << "[pub raw] fallo send\n"; break; }
+  }
+  CLOSESOCK(s);
+  std::cout << "[pub raw] OK\n";
+}
+
+// ===== Generar eventos reales (legacy) =====
+static void generate_legacy_events(int rounds, int blocks, int elems) {
+  for (int r = 0; r < rounds && g_running; ++r) {
+    std::vector<int*> v; v.reserve(blocks);
+    for (int i = 0; i < blocks; ++i) v.push_back(new int[elems]);
+    for (int* p : v) delete[] p;
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  }
+}
+static void bridge_burst() {
+  ProfilerClient::instance().configure(G.host, G.port, G.appId);
+  if (!G.bridge_installed) {
+    legacy_bridge::install_socket_sink(G.host, G.port, G.appId);
+    G.bridge_installed = true;
+  }
+  int rounds=3, blocks=300, elems=256;
+  std::cout << "rounds? [3] ";   std::string s; std::getline(std::cin, s); if (!s.empty()) rounds = std::stoi(s);
+  std::cout << "blocks? [300] "; std::getline(std::cin, s); if (!s.empty()) blocks = std::stoi(s);
+  std::cout << "elems?  [256] "; std::getline(std::cin, s); if (!s.empty()) elems  = std::stoi(s);
+  std::cout << "[bridge] generando...\n";
+  generate_legacy_events(rounds, blocks, elems);
+  std::cout << "[bridge] listo.\n";
+}
+
+// ===== Menú =====
+static void print_menu() {
+  std::cout <<
+    "\n=== MemoryProfiler test (menu) ===\n"
+    "Host: " << G.host << "  Port: " << G.port << "  AppId: " << G.appId << "\n"
+    "1) Suscribirse y escuchar\n"
+    "2) Parar suscripción\n"
+    "3) Publicar ejemplo (SDK)\n"
+    "4) Publicar ejemplo (raw)\n"
+    "5) Generar eventos REALes (legacy new/delete)\n"
+    "6) Cambiar host/puerto/appId\n"
+    "7) Salir\n"
+    "> ";
+}
+
+// ===== ACTIVAR LEGACY AL FINAL DE LOS INCLUDES =====
+#define MEMPROF_ENABLE_NEW_MACRO
+#include "memprof.hpp"   // ¡nunca en headers y que no haya includes después!
+
+int main(int /*argc*/, char** argv) {
+  net::WSAInit wsa_guard;  // mantiene WinSock vivo (no-op en Linux)
+  setup_utf8_console();
+  std::signal(SIGINT, on_sigint);
+
+#ifdef _WIN32
+  (void)ensure_broker_running(G.host, G.port, argv[0]); // intenta arrancarlo si no responde
+#endif
+
+  std::string in;
+  while (g_running) {
+    print_menu();
+    if (!std::getline(std::cin, in)) break;
+    if (in.empty()) continue;
+
+    switch (in[0]) {
+      case '1': { if (start_subscriber()) std::cout << "[sub] escuchando...\n"; } break;
+      case '2': { stop_subscriber(); std::cout << "[sub] parado.\n"; } break;
+      case '3': publish_sdk(); break;
+      case '4': publish_raw(); break;
+      case '5': bridge_burst(); break;
+      case '6': {
+        std::string s;
+        std::cout << "host [" << G.host << "]: ";   std::getline(std::cin, s); if (!s.empty()) G.host = s;
+        std::cout << "port [" << G.port << "]: ";   std::getline(std::cin, s); if (!s.empty()) G.port = static_cast<uint16_t>(std::stoi(s));
+        std::cout << "app  [" << G.appId << "]: ";  std::getline(std::cin, s); if (!s.empty()) G.appId = s;
+        std::cout << "OK.\n";
+      } break;
+      case '7': g_running = false; break;
+      default: std::cout << "Opción inválida.\n"; break;
+    }
+  }
+
+  stop_subscriber();
+  std::cout << "Bye!\n";
+  return 0;
+}
+
+
+
