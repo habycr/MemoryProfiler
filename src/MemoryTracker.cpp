@@ -1,120 +1,80 @@
 #include "MemoryTracker.h"
-#include "Protocol.h"
-#include "NetUtils.h"
 #include <iostream>
-#include <chrono>
-#include <sstream>
+#include <cstring>
 
-#ifdef _WIN32
-  #pragma comment(lib,"ws2_32.lib")
-#endif
-
-static inline uint64_t now_ms() {
-    using namespace std::chrono;
-    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-}
+ProfilerClient::~ProfilerClient() { close_socket(); }
 
 ProfilerClient& ProfilerClient::instance() {
-    static ProfilerClient inst;
-    return inst;
-}
-
-ProfilerClient::ProfilerClient() {}
-ProfilerClient::~ProfilerClient() {}
-
-void ProfilerClient::configure(const std::string& ip, uint16_t port, const std::string& appId) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    ip_ = ip; port_ = port; appId_ = appId;
-}
-
-socket_t ProfilerClient::connectOnce() {
-    socket_t s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-#ifdef _WIN32
-    if (s == INVALID_SOCKET) return INVALID_SOCKET;
-#else
-    if (s < 0) return -1;
-#endif
-    sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(port_);
-    if (::inet_pton(AF_INET, ip_.c_str(), &addr.sin_addr) != 1) {
-        CLOSESOCK(s);
-#ifdef _WIN32
-        return INVALID_SOCKET;
-#else
-        return -1;
-#endif
-    }
-    if (::connect(s, (sockaddr*)&addr, sizeof(addr)) < 0) {
-        CLOSESOCK(s);
-#ifdef _WIN32
-        return INVALID_SOCKET;
-#else
-        return -1;
-#endif
-    }
+    static ProfilerClient s;
     return s;
 }
 
-void ProfilerClient::publish(const std::string& topic, const std::string& payload) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    socket_t s = connectOnce();
+void ProfilerClient::configure(const std::string& ip, uint16_t port, const std::string& appId) {
+    std::lock_guard<std::mutex> lk(m_);
+    ip_ = ip; port_ = port; appId_ = appId;
+    close_socket(); // forzar nueva conexión con la nueva config
+}
+
+bool ProfilerClient::publish(const std::string& topic, const std::string& payload) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (!ensure_connected()) return false;
+
+    std::string line = "PUBLISH|" + protocol::encode(topic)
+                     + "|" + protocol::encode(payload);
+    if (!appId_.empty()) line += "|" + protocol::encode(appId_);
+    line += "\n";
+
+    if (!net::sendAll(sock_, line.c_str(), line.size())) {
+        // Reintento 1: reconectar y volver a enviar
+        close_socket();
+        if (!ensure_connected()) return false;
+        if (!net::sendAll(sock_, line.c_str(), line.size())) {
+            close_socket();
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ProfilerClient::ensure_connected() {
+    if (!IS_INVALID(sock_)) return true;
+    if (ip_.empty() || port_ == 0) return false;
+
+    sock_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (IS_INVALID(sock_)) { sock_ = INVALID_SOCK; return false; }
+
+    sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port_);
+    if (::inet_pton(AF_INET, ip_.c_str(), &a.sin_addr) != 1) {
+        close_socket(); return false;
+    }
+    if (::connect(sock_, (sockaddr*)&a, sizeof(a)) < 0) {
+        close_socket(); return false;
+    }
+    (void)set_timeouts();
+    return true;
+}
+
+void ProfilerClient::close_socket() {
+    if (!IS_INVALID(sock_)) { CLOSESOCK(sock_); }
 #ifdef _WIN32
-    if (s == INVALID_SOCKET) return;
+    sock_ = INVALID_SOCKET;
 #else
-    if (s < 0) return;
+    sock_ = (socket_t)-1;
 #endif
-    std::string line = "PUBLISH|" + protocol::encode(topic) + "|" +
-                       protocol::encode(payload) + "|" + protocol::encode(appId_) + "\n";
-    net::sendAll(s, line.c_str(), line.size());
-    std::string resp;
-    net::recvLine(s, resp);
-    (void)resp;
-    CLOSESOCK(s);
 }
 
-MemoryStats& globalMemoryStats() {
-    static MemoryStats stats;
-    return stats;
-}
-
-#ifdef ENABLE_MEMORY_PROFILER
-void* operator new(std::size_t sz) noexcept(false) {
-    void* p = std::malloc(sz);
-    if (!p) throw std::bad_alloc();
-    auto& st = globalMemoryStats();
-    auto cur = st.currentBytes.fetch_add(sz) + sz;
-    auto maxv = st.maxBytes.load();
-    while (cur > maxv && !st.maxBytes.compare_exchange_weak(maxv, cur)) {}
-    st.activeAllocs.fetch_add(1);
-    st.totalAllocs.fetch_add(1);
-
-    std::ostringstream oss;
-    oss << protocol::TOPIC_ALLOCATION << "|" << now_ms()
-        << "|" << p << "|" << sz << "|new|unknown|0|" << "APP";
-    ProfilerClient::instance().publish(protocol::TOPIC_ALLOCATION, oss.str());
-
-    auto& s = globalMemoryStats();
-    std::ostringstream mu;
-    mu << protocol::TOPIC_MEMORY_UPDATE << "|" << now_ms()
-       << "|" << (s.currentBytes.load() / 1048576.0)
-       << "|" << s.activeAllocs.load()
-       << "|" << (s.maxBytes.load() / 1048576.0)
-       << "|" << s.totalAllocs.load()
-       << "|" << "APP";
-    ProfilerClient::instance().publish(protocol::TOPIC_MEMORY_UPDATE, mu.str());
-
-    return p;
-}
-
-void operator delete(void* p) noexcept {
-    if (!p) return;
-    auto& st = globalMemoryStats();
-    st.activeAllocs.fetch_sub(1);
-
-    std::ostringstream oss;
-    oss << protocol::TOPIC_DEALLOCATION << "|" << now_ms()
-        << "|" << p << "|" << "APP";
-    ProfilerClient::instance().publish(protocol::TOPIC_DEALLOCATION, oss.str());
-
-    std::free(p);
-}
+bool ProfilerClient::set_timeouts() {
+    if (timeout_ms_ <= 0 || IS_INVALID(sock_)) return true;
+#ifdef _WIN32
+    DWORD tv = static_cast<DWORD>(timeout_ms_);
+    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+#else
+    timeval tv{};
+    tv.tv_sec  = timeout_ms_ / 1000;
+    tv.tv_usec = (timeout_ms_ % 1000) * 1000;
+    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 #endif
+    return true;
+}

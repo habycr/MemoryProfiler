@@ -1,42 +1,43 @@
 #pragma once
 #include <string>
-#include <cstdint>
 #include <mutex>
-#include <atomic>
+#include "Protocol.h"
 #include "NetUtils.h"
 
 class ProfilerClient {
 public:
     static ProfilerClient& instance();
 
-    // Configurar destino
+    // Configura destino y appId. Cierra la conexión previa si existía.
     void configure(const std::string& ip, uint16_t port, const std::string& appId);
 
-    // Enviar payload ya formado (se agrega '\n')
-    void publish(const std::string& topic, const std::string& payload);
+    // Publica usando una conexión PERSISTENTE (reconecta 1 vez si falla).
+    bool publish(const std::string& topic, const std::string& payload);
 
-private:
-    ProfilerClient();
+    // Opcional: timeout de socket (ms) para futuras conexiones.
+    void set_timeout_ms(int ms) { timeout_ms_ = ms; }
+
     ~ProfilerClient();
 
-    socket_t connectOnce(); // conexión corta por mensaje
+private:
+    ProfilerClient() = default;
+    ProfilerClient(const ProfilerClient&) = delete;
+    ProfilerClient& operator=(const ProfilerClient&) = delete;
 
-    std::mutex mtx_;
-    std::string ip_ = "127.0.0.1";
-    uint16_t port_ = 5000;
-    std::string appId_ = "APP";
-};
+    bool ensure_connected();   // crea y conecta si hace falta
+    void close_socket();       // cierra y deja listo para reconectar
+    bool set_timeouts();       // aplica SO_RCVTIMEO/SO_SNDTIMEO si se configuró
 
-struct MemoryStats {
-    std::atomic<size_t> currentBytes{0};
-    std::atomic<size_t> maxBytes{0};
-    std::atomic<size_t> activeAllocs{0};
-    std::atomic<size_t> totalAllocs{0};
-};
+    std::string ip_;
+    uint16_t    port_ = 0;
+    std::string appId_;
 
-MemoryStats& globalMemoryStats();
-
-#ifdef ENABLE_MEMORY_PROFILER
-void* operator new(std::size_t sz) noexcept(false);
-void operator delete(void* p) noexcept;
+#ifdef _WIN32
+    static constexpr socket_t INVALID_SOCK = INVALID_SOCKET;
+#else
+    static constexpr socket_t INVALID_SOCK = (socket_t)-1;
 #endif
+    socket_t    sock_ = INVALID_SOCK;
+    int         timeout_ms_ = 0;
+    std::mutex  m_;
+};

@@ -1,5 +1,5 @@
 // tests/test_socket.cpp
-// Cliente de pruebas "pro" para el broker: SUBSCRIBE / PUBLISH / LEGACY-BRIDGE
+// Test interactivo con menú: SUBSCRIBE / PUBLISH / LEGACY-BRIDGE
 
 #include <iostream>
 #include <string>
@@ -10,17 +10,23 @@
 #include <cstring>
 #include <cstdint>
 #include <csignal>
-#include <cstdio>   // std::snprintf
+#include <cstdio>       // std::snprintf
+#include <mutex>
+#include <filesystem>
 
 #include "Protocol.h"
 #include "MemoryTracker.h"  // ProfilerClient (SDK)
 #include "NetUtils.h"
 #include "LegacyBridge.h"   // instalar sink legacy -> broker
 
-// ====== Utilidades de consola (UTF-8 en Windows) ======
+// ===== Consola UTF-8 en Windows (opcional) =====
 #ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
   #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
   #define NOMINMAX
+  #endif
   #include <windows.h>
   static void setup_utf8_console() {
     SetConsoleOutputCP(CP_UTF8);
@@ -30,253 +36,222 @@
   static void setup_utf8_console() {}
 #endif
 
-// Sentinel de socket inválido portable
 #ifdef _WIN32
   constexpr socket_t INVALID_SOCK = INVALID_SOCKET;
 #else
   constexpr socket_t INVALID_SOCK = (socket_t)-1;
 #endif
 
-// ====== Señal de salida segura ======
+// ===== Señal de salida segura =====
 static std::atomic<bool> g_running{true};
 static void on_sigint(int) { g_running = false; }
 
-// ====== Conexión simple ======
+// ===== Helpers red =====
 static socket_t connect_to(const std::string& ip, uint16_t port) {
   socket_t s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (IS_INVALID(s)) return INVALID_SOCK;
-
   sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port);
-  if (::inet_pton(AF_INET, ip.c_str(), &a.sin_addr) != 1) {
-    CLOSESOCK(s); return INVALID_SOCK;
-  }
-  if (::connect(s, (sockaddr*)&a, sizeof(a)) < 0) {
-    CLOSESOCK(s); return INVALID_SOCK;
-  }
+  if (::inet_pton(AF_INET, ip.c_str(), &a.sin_addr) != 1) { CLOSESOCK(s); return INVALID_SOCK; }
+  if (::connect(s, (sockaddr*)&a, sizeof(a)) < 0)          { CLOSESOCK(s); return INVALID_SOCK; }
   return s;
 }
-
 static bool send_line(socket_t s, const std::string& line) {
-  if (!net::sendAll(s, line.c_str(), line.size())) {
-  #ifdef _WIN32
-    std::cerr << "[send] WSAGetLastError=" << WSAGetLastError() << "\n";
-  #endif
+  return net::sendAll(s, line.c_str(), line.size());
+}
+
+// ===== Auto-lanzar broker si no está (Windows) =====
+#ifdef _WIN32
+static bool ensure_broker_running(const std::string& host, uint16_t port, const char* argv0) {
+  socket_t s = connect_to(host, port);
+  if (!IS_INVALID(s)) { CLOSESOCK(s); return true; }
+  std::filesystem::path exeDir = std::filesystem::path(argv0).parent_path();
+  std::filesystem::path serverPath = exeDir / "memory_profiler_server.exe";
+  if (!std::filesystem::exists(serverPath)) return false;
+  std::string cmd = "\"" + serverPath.string() + "\" " + host + " " + std::to_string(port);
+  STARTUPINFOA si{}; si.cb = sizeof(si); PROCESS_INFORMATION pi{};
+  if (!CreateProcessA(NULL, cmd.data(), NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, exeDir.string().c_str(), &si, &pi))
     return false;
-  }
-  return true;
+  CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  s = connect_to(host, port);
+  if (!IS_INVALID(s)) { CLOSESOCK(s); return true; }
+  return false;
 }
+#endif
 
-// ====== SUBSCRIBE (y lector asíncrono) ======
-static bool subscribe_and_readloop(const std::string& ip, uint16_t port,
-                                   const std::string& topic,
-                                   const std::string& appId)
-{
-  socket_t s = connect_to(ip, port);
-  if (IS_INVALID(s)) { std::cerr << "[sub] no se pudo conectar\n"; return false; }
-
-  std::string line = std::string("SUBSCRIBE|")
-                   + protocol::encode(topic) + "|"
-                   + protocol::encode(appId) + "\n";
-  if (!send_line(s, line)) {
-    std::cerr << "[sub] fallo send\n"; CLOSESOCK(s); return false;
-  }
-
-  std::string resp;
-  if (!net::recvLine(s, resp)) {
-    std::cerr << "[sub] sin respuesta\n"; CLOSESOCK(s); return false;
-  }
-  std::cout << "[sub] resp: " << resp << "\n";
-  if (resp.rfind("OK", 0) != 0) {
-    CLOSESOCK(s); return false;
-  }
-
-  // lector en background
-  std::thread reader([s](){
-    std::string r;
-    while (g_running && net::recvLine(s, r)) {
-      std::cout << "[RX] " << r << std::endl;
-      r.clear();
-    }
-    CLOSESOCK(s);
-  });
-  reader.detach();
-  return true;
-}
-
-// ====== PUBLISH por SDK (ProfilerClient) ======
-static bool publish_once_sdk(const std::string& topic, const std::string& payload) {
-  try {
-    ProfilerClient::instance().publish(topic, payload);
-    return true;
-  } catch (const std::exception& e) {
-    std::cerr << "[pub] error: " << e.what() << "\n";
-    return false;
-  }
-}
-
-// ====== PUBLISH raw (opcional) ======
-static bool publish_once_raw(const std::string& ip, uint16_t port,
-                             const std::string& topic, const std::string& payload)
-{
-  socket_t s = connect_to(ip, port);
-  if (IS_INVALID(s)) { std::cerr << "[pub] no se pudo conectar\n"; return false; }
-  std::string line = std::string("PUBLISH|")
-                   + protocol::encode(topic) + "|"
-                   + protocol::encode(payload) + "\n";
-  bool ok = send_line(s, line);
-  CLOSESOCK(s);
-  return ok;
-}
-
-// ====== Generar JSON de ejemplo ======
-static std::string make_sample_json(const char* kind, std::size_t bytes, int iter) {
-  // Campos típicos del legacy
-  char buf[512];
-  auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
-  auto ns  = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
-  std::snprintf(buf, sizeof(buf),
-    "{\"kind\":\"%s\",\"ptr\":\"0x%08X\",\"size\":%zu,"
-    "\"file\":\"test_socket.cpp\",\"line\":%d,"
-    "\"type\":\"int[]\",\"is_array\":1,"
-    "\"ts_ns\":%lld,\"thread\":%lld}",
-    kind, 0xDEAD0000 + iter, bytes, 123 + iter,
-    (long long)ns, (long long)std::hash<std::thread::id>{}(std::this_thread::get_id()));
-  return std::string(buf);
-}
-
-// ====== Generar eventos reales con legacy (new/delete) ======
-static void generate_legacy_events(int rounds, int blocks, int block_elems) {
-  for (int r = 0; r < rounds && g_running; ++r) {
-    std::vector<int*> v; v.reserve(blocks);
-    for (int i = 0; i < blocks; ++i) v.push_back(new int[block_elems]);
-    for (int* p : v) delete[] p;
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-  }
-}
-
-// ====== CLI ======
-static void usage(const char* prog) {
-  std::cout <<
-    "Uso:\n"
-    "  " << prog << " [opciones]\n\n"
-    "Opciones principales (puedes combinar --sub y --bridge):\n"
-    "  --sub                 Suscribirse y mostrar mensajes\n"
-    "  --pub                 Publicar 1 mensaje de ejemplo por SDK\n"
-    "  --pubraw              Publicar 1 mensaje de ejemplo por socket crudo\n"
-    "  --bridge              Instalar puente legacy y generar new/delete\n"
-    "\nOpciones comunes:\n"
-    "  --host=127.0.0.1      Host del broker (defecto 127.0.0.1)\n"
-    "  --port=5000           Puerto del broker (defecto 5000)\n"
-    "  --topic=MEMORY_UPDATE Topico (defecto MEMORY_UPDATE)\n"
-    "  --app=APP-1           appId para SDK/bridge (defecto APP-1)\n"
-    "\nOpciones de carga:\n"
-    "  --rounds=5            Iteraciones de alloc/free (bridge)\n"
-    "  --blocks=200          Bloques por ronda (bridge)\n"
-    "  --elems=256           Enteros por bloque (bridge)\n"
-    "  --sleepms=0           Espera tras publicar/iterar (ms)\n"
-    "\nEjemplos:\n"
-    "  " << prog << " --sub\n"
-    "  " << prog << " --pub --app=APP-1\n"
-    "  " << prog << " --bridge --rounds=3 --blocks=300 --elems=512\n"
-    "  " << prog << " --sub --bridge  (se suscribe y además genera eventos)\n";
-}
-
-// ====== ACTIVAR LEGACY AL FINAL DE LOS INCLUDES ======
-#define MEMPROF_ENABLE_NEW_MACRO
-#include "memprof.hpp"      // ¡nunca en headers y que no haya includes después!
-
-// ====== main ======
-int main(int argc, char** argv) {
-  // Mantener WinSock vivo todo el proceso (no-op en Linux/Mac)
-  net::WSAInit wsa_guard;
-
-  setup_utf8_console();
-  std::signal(SIGINT, on_sigint);
-
-  // Defaults
-  std::string host  = "127.0.0.1";
-  uint16_t    port  = 5000;
+// ===== Estado de la app =====
+struct AppState {
+  std::string host = "127.0.0.1";
+  uint16_t    port = 5000;
   std::string topic = protocol::TOPIC_MEMORY_UPDATE;
   std::string appId = "APP-1";
 
-  bool do_sub     = false;
-  bool do_pub_sdk = false;
-  bool do_pub_raw = false;
-  bool do_bridge  = false;
+  // Suscriptor
+  std::atomic<bool> sub_running{false};
+  socket_t sub_sock = INVALID_SOCK;
+  std::thread sub_thread;
 
-  int rounds = 5, blocks = 200, elems = 256;
-  int sleep_ms = 0;
+  // Bridge
+  std::atomic<bool> bridge_installed{false};
 
-  // Parse args muy simple
-  for (int i = 1; i < argc; ++i) {
-    std::string a = argv[i];
-    auto eat = [&](const char* key, std::string& out) {
-      if (a.rfind(key,0)==0) { out = a.substr(std::strlen(key)); return true; }
-      return false;
-    };
-    auto eat_u16 = [&](const char* key, uint16_t& out) {
-      if (a.rfind(key,0)==0) { out = static_cast<uint16_t>(std::stoi(a.substr(std::strlen(key)))); return true; }
-      return false;
-    };
-    auto eat_int = [&](const char* key, int& out) {
-      if (a.rfind(key,0)==0) { out = std::stoi(a.substr(std::strlen(key))); return true; }
-      return false;
-    };
+  std::mutex m; // proteger sub_sock
+};
+static AppState G;
 
-    if      (a=="--sub")       do_sub = true;
-    else if (a=="--pub")       do_pub_sdk = true;
-    else if (a=="--pubraw")    do_pub_raw = true;
-    else if (a=="--bridge")    do_bridge = true;
-    else if (eat("--host=", host)) {}
-    else if (eat_u16("--port=", port)) {}
-    else if (eat("--topic=", topic)) {}
-    else if (eat("--app=", appId)) {}
-    else if (eat_int("--rounds=", rounds)) {}
-    else if (eat_int("--blocks=", blocks)) {}
-    else if (eat_int("--elems=",  elems)) {}
-    else if (eat_int("--sleepms=", sleep_ms)) {}
-    else { usage(argv[0]); return 1; }
-  }
+// ===== Suscripción (start/stop) =====
+static bool start_subscriber() {
+  std::lock_guard<std::mutex> lk(G.m);
+  if (G.sub_running) { std::cout << "Ya estás suscrito.\n"; return true; }
+  G.sub_sock = connect_to(G.host, G.port);
+  if (IS_INVALID(G.sub_sock)) { std::cout << "[sub] no se pudo conectar\n"; return false; }
 
-  // Config SDK para las operaciones por publish (y para el bridge)
-  ProfilerClient::instance().configure(host, port, appId);
+  std::string line = std::string("SUBSCRIBE|") + protocol::encode(G.topic) + "|" + protocol::encode("GUI-1") + "\n";
+  if (!send_line(G.sub_sock, line)) { std::cout << "[sub] fallo send\n"; CLOSESOCK(G.sub_sock); G.sub_sock = INVALID_SOCK; return false; }
 
-  // Suscripción (mantiene hilo lector)
-  if (do_sub) {
-    if (!subscribe_and_readloop(host, port, topic, "GUI-1"))
-      return 2;
-  }
+  std::string resp;
+  if (!net::recvLine(G.sub_sock, resp)) { std::cout << "[sub] sin respuesta\n"; CLOSESOCK(G.sub_sock); G.sub_sock = INVALID_SOCK; return false; }
+  std::cout << "[sub] resp: " << resp << "\n";
+  if (resp.rfind("OK", 0) != 0) { CLOSESOCK(G.sub_sock); G.sub_sock = INVALID_SOCK; return false; }
 
-  // Publicación simple (SDK o crudo)
-  if (do_pub_sdk || do_pub_raw) {
-    auto alloc = make_sample_json("ALLOC",  64, 1);
-    auto freee = make_sample_json("FREE",    0, 2);
-
-    if (do_pub_sdk) {
-      publish_once_sdk(topic, alloc);
-      publish_once_sdk(topic, freee);
+  G.sub_running = true;
+  G.sub_thread = std::thread([]{
+    std::string r;
+    while (G.sub_running && net::recvLine(G.sub_sock, r)) {
+      if (r.rfind("PUBLISH|", 0) == 0) std::cout << "[RX] " << r << "\n";
+      r.clear();
     }
-    if (do_pub_raw) {
-      publish_once_raw(host, port, topic, alloc);
-      publish_once_raw(host, port, topic, freee);
+    std::lock_guard<std::mutex> lk(G.m);
+    if (!IS_INVALID(G.sub_sock)) { CLOSESOCK(G.sub_sock); G.sub_sock = INVALID_SOCK; }
+    G.sub_running = false;
+  });
+  return true;
+}
+static void stop_subscriber() {
+  std::thread th;
+  {
+    std::lock_guard<std::mutex> lk(G.m);
+    if (!G.sub_running) return;
+    G.sub_running = false;
+    if (!IS_INVALID(G.sub_sock)) { CLOSESOCK(G.sub_sock); G.sub_sock = INVALID_SOCK; }
+    th = std::move(G.sub_thread);
+  }
+  if (th.joinable()) th.join();
+}
+
+// ===== Publicar ejemplos =====
+static std::string make_sample_json(const char* kind, std::size_t bytes, int iter) {
+  char buf[512];
+  auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+  auto ns  = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+
+  // is_array: 1 si "ALLOC", 0 si no
+  int is_array = (std::string(kind) == "ALLOC") ? 1 : 0;
+
+  std::snprintf(buf, sizeof(buf),
+    "{\"kind\":\"%s\",\"ptr\":\"0x%08X\",\"size\":%zu,"
+    "\"file\":\"\",\"line\":0,\"type\":\"\",\"is_array\":%d,"
+    "\"ts_ns\":%lld,\"thread\":%lld}",
+    kind, 0xDEAD0000 + iter, bytes, is_array,
+    (long long)ns, (long long)std::hash<std::thread::id>{}(std::this_thread::get_id()));
+  return std::string(buf);
+}
+static void publish_sdk() {
+  auto j1 = make_sample_json("ALLOC", 256, 1);
+  auto j2 = make_sample_json("FREE",    0, 2);
+  ProfilerClient::instance().configure(G.host, G.port, G.appId);
+  bool a = ProfilerClient::instance().publish(G.topic, j1);
+  bool b = ProfilerClient::instance().publish(G.topic, j2);
+  std::cout << "[pub SDK] " << (a && b ? "OK" : "FALLO") << "\n";
+}
+static void publish_raw() {
+  socket_t s = connect_to(G.host, G.port);
+  if (IS_INVALID(s)) { std::cout << "[pub raw] no conecta\n"; return; }
+  for (auto& j : { make_sample_json("ALLOC", 64, 3), make_sample_json("FREE", 0, 4) }) {
+    std::string line = std::string("PUBLISH|") + protocol::encode(G.topic) + "|" + protocol::encode(j) + "|" + protocol::encode(G.appId) + "\n";
+    if (!send_line(s, line)) { std::cout << "[pub raw] fallo send\n"; break; }
+  }
+  CLOSESOCK(s);
+  std::cout << "[pub raw] OK\n";
+}
+
+// ===== Generar eventos reales (legacy) =====
+static void generate_legacy_events(int rounds, int blocks, int elems) {
+  for (int r = 0; r < rounds && g_running; ++r) {
+    std::vector<int*> v; v.reserve(blocks);
+    for (int i = 0; i < blocks; ++i) v.push_back(new int[elems]);
+    for (int* p : v) delete[] p;
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  }
+}
+static void bridge_burst() {
+  ProfilerClient::instance().configure(G.host, G.port, G.appId);
+  if (!G.bridge_installed) {
+    legacy_bridge::install_socket_sink(G.host, G.port, G.appId);
+    G.bridge_installed = true;
+  }
+  int rounds=3, blocks=300, elems=256;
+  std::cout << "rounds? [3] ";   std::string s; std::getline(std::cin, s); if (!s.empty()) rounds = std::stoi(s);
+  std::cout << "blocks? [300] "; std::getline(std::cin, s); if (!s.empty()) blocks = std::stoi(s);
+  std::cout << "elems?  [256] "; std::getline(std::cin, s); if (!s.empty()) elems  = std::stoi(s);
+  std::cout << "[bridge] generando...\n";
+  generate_legacy_events(rounds, blocks, elems);
+  std::cout << "[bridge] listo.\n";
+}
+
+// ===== Menú =====
+static void print_menu() {
+  std::cout <<
+    "\n=== MemoryProfiler test (menu) ===\n"
+    "Host: " << G.host << "  Port: " << G.port << "  AppId: " << G.appId << "\n"
+    "1) Suscribirse y escuchar\n"
+    "2) Parar suscripción\n"
+    "3) Publicar ejemplo (SDK)\n"
+    "4) Publicar ejemplo (raw)\n"
+    "5) Generar eventos REALes (legacy new/delete)\n"
+    "6) Cambiar host/puerto/appId\n"
+    "7) Salir\n"
+    "> ";
+}
+
+// ===== ACTIVAR LEGACY AL FINAL DE LOS INCLUDES =====
+#define MEMPROF_ENABLE_NEW_MACRO
+#include "memprof.hpp"   // ¡nunca en headers y que no haya includes después!
+
+int main(int /*argc*/, char** argv) {
+  net::WSAInit wsa_guard;  // mantiene WinSock vivo (no-op en Linux)
+  setup_utf8_console();
+  std::signal(SIGINT, on_sigint);
+
+#ifdef _WIN32
+  (void)ensure_broker_running(G.host, G.port, argv[0]); // intenta arrancarlo si no responde
+#endif
+
+  std::string in;
+  while (g_running) {
+    print_menu();
+    if (!std::getline(std::cin, in)) break;
+    if (in.empty()) continue;
+
+    switch (in[0]) {
+      case '1': { if (start_subscriber()) std::cout << "[sub] escuchando...\n"; } break;
+      case '2': { stop_subscriber(); std::cout << "[sub] parado.\n"; } break;
+      case '3': publish_sdk(); break;
+      case '4': publish_raw(); break;
+      case '5': bridge_burst(); break;
+      case '6': {
+        std::string s;
+        std::cout << "host [" << G.host << "]: ";   std::getline(std::cin, s); if (!s.empty()) G.host = s;
+        std::cout << "port [" << G.port << "]: ";   std::getline(std::cin, s); if (!s.empty()) G.port = static_cast<uint16_t>(std::stoi(s));
+        std::cout << "app  [" << G.appId << "]: ";  std::getline(std::cin, s); if (!s.empty()) G.appId = s;
+        std::cout << "OK.\n";
+      } break;
+      case '7': g_running = false; break;
+      default: std::cout << "Opción inválida.\n"; break;
     }
   }
 
-  // Bridge legacy -> broker + generación real de eventos
-  if (do_bridge) {
-    legacy_bridge::install_socket_sink(host, port, appId);
-    generate_legacy_events(rounds, blocks, elems);
-  }
-
-  if (sleep_ms > 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
-  }
-
-  // Si solo hicimos --sub, mantenemos el proceso vivo hasta Ctrl+C
-  if (do_sub && !do_pub_sdk && !do_pub_raw && !do_bridge) {
-    std::cout << "[info] escuchando... (Ctrl+C para salir)\n";
-    while (g_running) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  }
-
+  stop_subscriber();
+  std::cout << "Bye!\n";
   return 0;
 }
+
