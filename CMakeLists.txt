@@ -58,6 +58,7 @@ endif()
 # ========== Ejemplos ==========
 add_executable(broker_client_example
         examples/broker_client_example.cpp
+        include/MetricsAggregator.h
 )
 target_include_directories(broker_client_example PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(broker_client_example PRIVATE mp_brokerclient)
@@ -110,6 +111,7 @@ endif()
 # ========== Servidor HTTP de métricas + estáticos ==========
 add_executable(gui_http_server
         src/gui_http_server.cpp
+        src/MetricsAggregator.cpp
 )
 target_include_directories(gui_http_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(gui_http_server PRIVATE mp_brokerclient mp_metrics mp_common)
@@ -119,3 +121,5 @@ else()
     find_package(Threads REQUIRED)
     target_link_libraries(gui_http_server PRIVATE Threads::Threads)
 endif()
+
+

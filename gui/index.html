@@ -1,76 +1,146 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Cache-Control" content="no-store" />
+    <title>Memory Profiler — GUI</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Memory Profiler — Vista general</title>
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-<!-- README corto:
-     1) Levanta broker + gui_server (Prompt 3 con /metrics).
-     2) Abre http://127.0.0.1:8080/
-     3) Observa métricas refrescándose cada 1 s.
--->
-
-<header class="header">
-    <h1>Memory Profiler — Vista general</h1>
-    <div id="status-pill" class="status-pill status-red" aria-live="polite">Sin conexión</div>
+<header class="app-header">
+    <h1>Memory Profiler</h1>
+    <div id="status-badge" class="badge badge-warn" aria-live="polite">Conectando…</div>
 </header>
 
-<main class="container">
-    <section aria-labelledby="metrics-title">
-        <h2 id="metrics-title">Métricas generales</h2>
-        <div class="grid">
-            <article class="card">
-                <h3>Memoria actual</h3>
-                <div class="value"><span id="currentMB">—</span> MB</div>
-            </article>
-            <article class="card">
-                <h3>Asignaciones activas</h3>
-                <div class="value"><span id="activeAllocs">—</span></div>
-            </article>
-            <article class="card">
-                <h3>Memoria fugada</h3>
-                <div class="value">
-                    <span id="leaksMB">—</span> MB
-                    <span id="leaksBadge" class="badge badge-muted" hidden>estimado</span>
+<nav class="tabs" role="tablist" aria-label="Pestañas de la aplicación">
+    <button class="tab active" role="tab" aria-selected="true" aria-controls="tab-general" id="tabbtn-general">General</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-mapa" id="tabbtn-mapa">Mapa</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-archivo" id="tabbtn-archivo">Por archivo</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-leaks" id="tabbtn-leaks">Leaks</button>
+</nav>
+
+<main class="tabpanes">
+    <!-- GENERAL -->
+    <section id="tab-general" class="tabpane active" role="tabpanel" aria-labelledby="tabbtn-general">
+        <div class="cards">
+            <div class="card"><div class="kpi-title">Uso actual</div><div id="kpi-current" class="kpi-value">0.00 MB</div></div>
+            <div class="card"><div class="kpi-title">Activas</div><div id="kpi-active" class="kpi-value">0</div></div>
+            <div class="card"><div class="kpi-title">Fugas</div><div id="kpi-leaks" class="kpi-value">0.00 MB</div></div>
+            <div class="card"><div class="kpi-title">Pico</div><div id="kpi-peak" class="kpi-value">0.00 MB</div></div>
+            <div class="card"><div class="kpi-title">Total allocs</div><div id="kpi-total" class="kpi-value">0</div></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h2>Línea de tiempo</h2>
+                <div class="legend"><span class="dot"></span> Memoria (MB) — <span class="dot dot2"></span> Leak (MB)</div>
+            </div>
+            <canvas id="chart-timeline" height="180"></canvas>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h2>Top-3 por archivo</h2>
+            </div>
+            <div class="table-wrap">
+                <table class="zebra">
+                    <thead><tr><th>Archivo</th><th>Conteo</th><th>MB</th></tr></thead>
+                    <tbody id="tbl-top3"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- MAPA -->
+    <section id="tab-mapa" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-mapa">
+        <div class="panel">
+            <div class="panel-head">
+                <h2>Bloques vivos</h2>
+                <div class="actions">
+                    <label>Ordenar:
+                        <select id="blocks-sort">
+                            <option value="ts_desc">Más recientes</option>
+                            <option value="size_desc">Tamaño (desc)</option>
+                            <option value="size_asc">Tamaño (asc)</option>
+                        </select>
+                    </label>
                 </div>
-            </article>
-            <article class="card">
-                <h3>Uso máximo (peak)</h3>
-                <div class="value"><span id="peakMB">—</span> MB</div>
-            </article>
-            <article class="card">
-                <h3>Total asignaciones</h3>
-                <div class="value"><span id="totalAllocs">—</span></div>
-            </article>
-        </div>
-
-        <div class="substatus">
-            <span>Última actualización: <strong id="lastUpdated">—:—:—</strong></span>
-            <span class="sep">•</span>
-            <span>Fuente: <strong id="sourceLabel">—</strong></span>
+            </div>
+            <div class="table-wrap">
+                <table class="zebra">
+                    <thead>
+                    <tr>
+                        <th>Ptr</th><th>Size (B)</th><th>Size (MB)</th><th>file:line</th><th>type</th><th>edad (ms)</th><th>estado</th>
+                    </tr>
+                    </thead>
+                    <tbody id="tbl-blocks"></tbody>
+                </table>
+            </div>
+            <div class="hint">Regla: <span class="badge">normal</span> &middot; <span class="badge badge-warn">envejecido</span> &middot; <span class="badge badge-danger">posible leak</span></div>
         </div>
     </section>
 
-    <section aria-labelledby="timeline-title" class="muted">
-        <h2 id="timeline-title">Línea de tiempo</h2>
-        <div class="placeholder">Pendiente en el siguiente prompt</div>
+    <!-- POR ARCHIVO -->
+    <section id="tab-archivo" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-archivo">
+        <div class="panel">
+            <div class="panel-head">
+                <h2>Estadísticas por archivo</h2>
+                <div class="actions">
+                    <label>Top N:
+                        <input type="number" id="sel-topN" min="3" max="50" value="10" />
+                    </label>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table class="zebra">
+                    <thead>
+                    <tr><th>Archivo</th><th>alloc_count</th><th>alloc_MB</th><th>live_count</th><th>live_MB</th></tr>
+                    </thead>
+                    <tbody id="tbl-files"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head"><h2>Barras — Conteo vs MB</h2></div>
+            <canvas id="chart-files" height="220"></canvas>
+        </div>
     </section>
 
-    <section aria-labelledby="topfiles-title" class="muted">
-        <h2 id="topfiles-title">Top 3 archivos</h2>
-        <div class="placeholder">Pendiente en el siguiente prompt</div>
+    <!-- LEAKS -->
+    <section id="tab-leaks" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-leaks">
+        <div class="cards">
+            <div class="card"><div class="kpi-title">Total fugado</div><div id="kpi-lk-total" class="kpi-value">0.00 MB</div></div>
+            <div class="card"><div class="kpi-title">Leak más grande</div><div id="kpi-lk-largest" class="kpi-value">—</div></div>
+            <div class="card"><div class="kpi-title">Top archivo por leaks</div><div id="kpi-lk-topfile" class="kpi-value">—</div></div>
+            <div class="card"><div class="kpi-title">Leak rate</div><div id="kpi-lk-rate" class="kpi-value">0.00%</div></div>
+        </div>
+
+        <div class="grid-2">
+            <div class="panel">
+                <div class="panel-head"><h2>Fugas por archivo (bytes)</h2></div>
+                <canvas id="chart-leaks-bars" height="220"></canvas>
+            </div>
+            <div class="panel">
+                <div class="panel-head"><h2>Distribución de fugas</h2></div>
+                <canvas id="chart-leaks-pie" height="220"></canvas>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head"><h2>Leak bytes en el tiempo</h2></div>
+            <canvas id="chart-leaks-time" height="180"></canvas>
+        </div>
     </section>
 </main>
 
-<footer class="footer">
-    <button id="btnFreeze" class="btn" aria-pressed="false">Congelar</button>
-    <button id="btnRefresh" class="btn btn-secondary">Forzar refresh</button>
+<footer class="app-footer">
+    <span>Polling ~300 ms</span>
+    <span>Umbral leak: <code id="leak-th-ms">30000</code> ms</span>
 </footer>
 
-<script src="app.js" defer></script>
+<script type="module" src="app.js"></script>
+
 </body>
 </html>

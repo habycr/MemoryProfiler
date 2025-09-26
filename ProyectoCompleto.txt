@@ -25,12 +25,14 @@ MemoryProfiler
 │   ├── metrics_stream.cpp
 ├── gui
 │   ├── app.js
+│   ├── charts.js
 │   ├── index.html
 │   ├── style.css
 ├── include
 │   ├── BrokerClient.h
 │   ├── LegacyBridge.h
 │   ├── MemoryTracker.h
+│   ├── MetricsAggregator.h
 │   ├── MetricsCalculator.h
 │   ├── NetUtils.h
 │   ├── Protocol.h
@@ -38,6 +40,7 @@ MemoryProfiler
 ├── src
 │   ├── BrokerClient.cpp
 │   ├── MemoryTracker.cpp
+│   ├── MetricsAggregator.cpp
 │   ├── MetricsCalculator.cpp
 │   ├── NetUtils.cpp
 │   ├── Protocol.cpp
@@ -47,6 +50,7 @@ MemoryProfiler
 ├── tests
 │   ├── test_metrics.cpp
 │   ├── test_socket.cpp
+├── tree_with_content_COMPLETO.txt
 
 ================================================================================
 CONTENIDO DE ARCHIVOS
@@ -114,6 +118,7 @@ endif()
 # ========== Ejemplos ==========
 add_executable(broker_client_example
         examples/broker_client_example.cpp
+        include/MetricsAggregator.h
 )
 target_include_directories(broker_client_example PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(broker_client_example PRIVATE mp_brokerclient)
@@ -166,6 +171,7 @@ endif()
 # ========== Servidor HTTP de métricas + estáticos ==========
 add_executable(gui_http_server
         src/gui_http_server.cpp
+        src/MetricsAggregator.cpp
 )
 target_include_directories(gui_http_server PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(gui_http_server PRIVATE mp_brokerclient mp_metrics mp_common)
@@ -175,6 +181,8 @@ else()
     find_package(Threads REQUIRED)
     target_link_libraries(gui_http_server PRIVATE Threads::Threads)
 endif()
+
+
 
 
 --------------------------------------------------
@@ -781,6 +789,681 @@ int main() {
 
 --------------------------------------------------
 
+app.js:
+-------
+import { lineChart, barChart, pieChart } from './charts.js';
+
+/* =================== Config =================== */
+const POLL_MS = 300;                 // 200–500 ms
+const REQ_TIMEOUT_MS = 1200;
+const LEAK_THRESHOLD_MS = 30000;     // Debe coincidir con backend (por defecto 30s)
+document.getElementById('leak-th-ms').textContent = LEAK_THRESHOLD_MS.toString();
+
+/* =============== Helpers generales =============== */
+const $ = sel => document.querySelector(sel);
+const $$ = sel => Array.from(document.querySelectorAll(sel));
+
+function bytesToMB(b){ return (b / (1024*1024)); }
+function fmtMB(b){ return bytesToMB(b).toFixed(2) + ' MB'; }
+function fmtPct(x){ return (x*100).toFixed(2) + '%'; }
+function safe(obj, path, dflt){ try{ return path.split('.').reduce((o,k)=>o[k], obj) ?? dflt; }catch{ return dflt; } }
+
+async function fetchJSON(path){
+    const ctl = new AbortController();
+    const t = setTimeout(()=>ctl.abort(), REQ_TIMEOUT_MS);
+    try{
+        const r = await fetch(path, {signal: ctl.signal, cache: 'no-store'});
+        if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+        return await r.json();
+    } finally { clearTimeout(t); }
+}
+
+function setStatus(ok){
+    const el = $('#status-badge');
+    if (ok){ el.textContent = 'En línea'; el.className = 'badge badge-ok'; }
+    else { el.textContent = 'Conectando…'; el.className = 'badge badge-warn'; }
+}
+
+/* =============== Tabs accesibles =============== */
+function setupTabs(){
+    const tabs = $$('.tab');
+    const panes = $$('.tabpane');
+    tabs.forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+            tabs.forEach(b=>{ b.classList.remove('active'); b.setAttribute('aria-selected','false'); });
+            panes.forEach(p=>p.classList.remove('active'));
+            btn.classList.add('active'); btn.setAttribute('aria-selected','true');
+            const pane = $('#'+btn.getAttribute('aria-controls'));
+            pane.classList.add('active');
+
+            // 🔁 Re-render del tab activo (por si estuvo oculto y los canvas tenían w=0)
+            if (pane.id === 'tab-general') {
+                renderTimeline(lastTimeline);
+            } else if (pane.id === 'tab-archivo') {
+                renderFileTable(lastFileStats);
+            } else if (pane.id === 'tab-leaks') {
+                renderLeaksCharts();
+            }
+            // (Mapa es tabla; no necesita redibujar canvas)
+        });
+    });
+}
+
+// Redibuja lo visible si el usuario cambia el tamaño de la ventana
+window.addEventListener('resize', ()=>{
+    const active = $('.tabpane.active')?.id;
+    if (active === 'tab-general') renderTimeline(lastTimeline);
+    else if (active === 'tab-archivo') renderFileTable(lastFileStats);
+    else if (active === 'tab-leaks') renderLeaksCharts();
+});
+
+/* =============== Estado in-memory (UI) =============== */
+let lastTimeline = []; // [{t_ns,current_bytes,leak_bytes}]
+let lastBlocks = [];   // cache para edades/estados
+let lastFileStats = {}; // {file: {alloc_count,alloc_bytes,live_count,live_bytes}}
+let lastLeaks = {};     // KPIs para leaks
+
+/* =============== Render: GENERAL =============== */
+function renderKPIs(metrics){
+    $('#kpi-current').textContent = fmtMB(metrics.current_bytes||0);
+    $('#kpi-active').textContent  = (metrics.active_allocs||0).toString();
+    $('#kpi-leaks').textContent   = fmtMB(metrics.leak_bytes||0);
+    $('#kpi-peak').textContent    = fmtMB(metrics.peak_bytes||0);
+    $('#kpi-total').textContent   = (metrics.total_allocs||0).toString();
+}
+
+function renderTimeline(timeline){
+    // Guardamos para la pestaña de leaks también
+    lastTimeline = timeline || [];
+    const curMB = lastTimeline.map(p=> bytesToMB(p.current_bytes||0));
+    const lkMB  = lastTimeline.map(p=> bytesToMB(p.leak_bytes||0));
+    const canvas = $('#chart-timeline');
+    const ctx = canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height);
+    lineChart(canvas, null, [
+        { name:'current', values: curMB },
+        { name:'leaks',   values: lkMB  },
+    ]);
+}
+
+function renderTop3(fileStats){
+    // fileStats: obj -> array ordenada por live_bytes desc
+    const rows = Object.entries(fileStats)
+        .map(([file,st])=>({file, ...st}))
+        .sort((a,b)=> (b.live_bytes||0)-(a.live_bytes||0))
+        .slice(0,3);
+    const tbody = $('#tbl-top3'); tbody.innerHTML = '';
+    rows.forEach(r=>{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td title="${r.file}">${r.file}</td>
+                    <td>${r.alloc_count}</td>
+                    <td>${bytesToMB(r.live_bytes).toFixed(2)}</td>`;
+        tbody.appendChild(tr);
+    });
+}
+
+/* =============== Render: MAPA =============== */
+function classifyBlockAge(ts_ns){
+    const now_ns = BigInt(Date.now()) * 1000000n;
+    const age_ms = Number( (now_ns - BigInt(ts_ns||0)) / 1000000n );
+    let state = 'normal';
+    if (age_ms > LEAK_THRESHOLD_MS*2) state = 'posible leak';
+    else if (age_ms > LEAK_THRESHOLD_MS) state = 'envejecido';
+    return {age_ms, state};
+}
+function renderBlocks(blocks){
+    lastBlocks = blocks || [];
+    // Orden
+    const sel = $('#blocks-sort').value;
+    const arr = [...lastBlocks];
+    if (sel==='ts_desc') arr.sort((a,b)=> (b.ts_ns||0)-(a.ts_ns||0));
+    else if (sel==='size_desc') arr.sort((a,b)=> (b.size||0)-(a.size||0));
+    else if (sel==='size_asc') arr.sort((a,b)=> (a.size||0)-(b.size||0));
+
+    const tbody = $('#tbl-blocks'); tbody.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    for (const b of arr){
+        const {age_ms, state} = classifyBlockAge(b.ts_ns);
+        const badgeCls = state==='posible leak' ? 'badge badge-danger'
+            : state==='envejecido'   ? 'badge badge-warn'
+                : 'badge';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+      <td>${b.ptr}</td>
+      <td>${b.size}</td>
+      <td>${bytesToMB(b.size).toFixed(2)}</td>
+      <td>${b.file || ''}${b.line? ':'+b.line:''}</td>
+      <td>${b.type || ''}</td>
+      <td>${age_ms}</td>
+      <td><span class="${badgeCls}">${state}</span></td>`;
+        frag.appendChild(tr);
+    }
+    tbody.appendChild(frag);
+}
+
+/* =============== Render: POR ARCHIVO =============== */
+function renderFileTable(fileStats){
+    lastFileStats = fileStats || {};
+    const rows = Object.entries(lastFileStats)
+        .map(([file,st])=>({file, ...st}))
+        .sort((a,b)=> (b.alloc_bytes||0)-(a.alloc_bytes||0));
+
+    const tbody = $('#tbl-files'); tbody.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    for (const r of rows){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td title="${r.file}">${r.file}</td>
+                    <td>${r.alloc_count}</td>
+                    <td>${bytesToMB(r.alloc_bytes).toFixed(2)}</td>
+                    <td>${r.live_count}</td>
+                    <td>${bytesToMB(r.live_bytes).toFixed(2)}</td>`;
+        frag.appendChild(tr);
+    }
+    tbody.appendChild(frag);
+
+    // Chart (Top N)
+    const N = Math.max(3, Math.min(50, parseInt($('#sel-topN').value||'10',10)));
+    const top = rows.slice(0,N);
+    const labels = top.map(r=>r.file.split('/').pop());
+    const series = [
+        { name:'Conteo', values: top.map(r=>r.alloc_count||0) },
+        { name:'MB',     values: top.map(r=>bytesToMB(r.alloc_bytes||0)) },
+    ];
+    const canvas = $('#chart-files');
+    const ctx = canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height);
+    barChart(canvas, labels, series, { stacked:false });
+}
+
+/* =============== Render: LEAKS =============== */
+function renderLeaksKPIs(leaks){
+    lastLeaks = leaks || {};
+    $('#kpi-lk-total').textContent = fmtMB(leaks.total_leak_bytes||0);
+    const largest = leaks.largest || {};
+    $('#kpi-lk-largest').textContent = largest.size ? `${largest.ptr || '—'} (${largest.file || '—'}) · ${fmtMB(largest.size)}` : '—';
+    const topf = leaks.top_file_by_leaks || {};
+    $('#kpi-lk-topfile').textContent = topf.file ? `${topf.file} · ${topf.count||0} · ${fmtMB(topf.bytes||0)}` : '—';
+    $('#kpi-lk-rate').textContent = fmtPct(leaks.leak_rate || 0);
+}
+function renderLeaksCharts(){
+    // Usamos file-stats para estimar "fugas por archivo" a partir de bloques vivos envejecidos
+    const leakPerFile = new Map(); // file -> bytes (solo envejecidos)
+    for (const b of (lastBlocks||[])) {
+        const {age_ms} = classifyBlockAge(b.ts_ns);
+        if (age_ms > LEAK_THRESHOLD_MS) {
+            leakPerFile.set(b.file || '(desconocido)', (leakPerFile.get(b.file || '(desconocido)')||0) + (b.size||0));
+        }
+    }
+    const entries = Array.from(leakPerFile.entries()).sort((a,b)=>b[1]-a[1]);
+    const labels = entries.map(e=> e[0].split('/').pop());
+    const valuesB = entries.map(e=> e[1]);
+
+    // Barras (bytes)
+    const bars = $('#chart-leaks-bars');
+    bars.getContext('2d').clearRect(0,0,bars.width,bars.height);
+    barChart(bars, labels, [{name:'bytes', values: valuesB}], { stacked:false });
+
+    // Pie
+    const pie = $('#chart-leaks-pie');
+    pie.getContext('2d').clearRect(0,0,pie.width,pie.height);
+    pieChart(pie, valuesB, labels, {});
+
+    // Temporal: leak_bytes de timeline
+    const line = $('#chart-leaks-time');
+    line.getContext('2d').clearRect(0,0,line.width,line.height);
+    const lkMB = (lastTimeline||[]).map(p=> bytesToMB(p.leak_bytes||0));
+    lineChart(line, null, [{name:'leaks', values: lkMB}]);
+}
+
+/* =============== Polling & loop =============== */
+let pollTimer = null;
+let consecutiveErrors = 0;
+
+async function pollOnce(){
+    try{
+        const [metrics, timeline, blocks, fileStats, leaks] = await Promise.all([
+            fetchJSON('/metrics'),
+            fetchJSON('/timeline'),
+            fetchJSON('/blocks'),
+            fetchJSON('/file-stats'),
+            fetchJSON('/leaks')
+        ]);
+
+        setStatus(true); consecutiveErrors = 0;
+
+        // GENERAL
+        renderKPIs(metrics);
+        renderTimeline(timeline);
+        renderTop3(fileStats);
+
+        // MAPA
+        renderBlocks(blocks);
+
+        // POR ARCHIVO
+        renderFileTable(fileStats);
+
+        // LEAKS
+        renderLeaksKPIs(leaks);
+        renderLeaksCharts();
+
+    } catch(e){
+        consecutiveErrors++;
+        if (consecutiveErrors >= 2) setStatus(false);
+        // backoff leve opcional
+    }
+}
+
+function startPolling(){
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(pollOnce, POLL_MS);
+}
+
+/* =============== Arranque =============== */
+window.addEventListener('load', ()=>{
+    setupTabs();
+    $('#blocks-sort').addEventListener('change', ()=> renderBlocks(lastBlocks));
+    $('#sel-topN').addEventListener('change', ()=> renderFileTable(lastFileStats));
+    startPolling();
+    pollOnce();
+});
+
+
+--------------------------------------------------
+
+charts.js:
+----------
+/* Pequeño helper para <canvas> sin librerías externas.
+   Funciones: lineChart(ctx, dataX[], series[], opts), barChart(ctx, labels[], series[], opts), pieChart(ctx, values[], labels[], opts)
+   - No estilos de color fijos; usa colores por defecto del contexto (configurados por caller).
+*/
+
+function fitRange(vals) {
+    if (!vals.length) return {min:0, max:1};
+    let mn = Math.min(...vals), mx = Math.max(...vals);
+    if (mn === mx) { mn -= 1; mx += 1; }
+    return {min: mn, max: mx};
+}
+function mapY(v, min, max, h, pad){ return h - pad - ((v - min) / (max - min)) * (h - 2*pad); }
+function mapX(i, n, w, pad){ if (n<=1) return pad; return pad + i*( (w-2*pad)/(n-1) ); }
+
+// ---------- helper de tamaño robusto (tab oculto, etc.) ----------
+function sizeCanvas(canvas) {
+    const parent = canvas.parentElement;
+    const measuredW = canvas.clientWidth || (parent ? parent.clientWidth : 0) || canvas.width || 300;
+    const measuredH = canvas.clientHeight || canvas.height || 200;
+    canvas.width  = measuredW;
+    canvas.height = measuredH;
+    return { w: canvas.width, h: canvas.height };
+}
+
+export function lineChart(canvas, dataX, series, opts={}){
+    const ctx = canvas.getContext('2d');
+
+    // Tamaño robusto
+    const { w, h } = sizeCanvas(canvas);
+    const pad = 28;
+
+    // X normalizado (indices) y Y en MB
+    const yVals = [];
+    for (const s of series) for (const v of s.values) yVals.push(v);
+    const {min, max} = fitRange(yVals);
+
+    // Limpia y Grid
+    ctx.clearRect(0,0,w,h);
+    ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
+    for (let gy=0; gy<5; ++gy){
+        const y = pad + gy*((h-2*pad)/4);
+        ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w-pad, y); ctx.stroke();
+    }
+
+    // Ejes
+    ctx.strokeStyle = '#9ca3af';
+    ctx.beginPath(); ctx.moveTo(pad, pad); ctx.lineTo(pad, h-pad); ctx.lineTo(w-pad, h-pad); ctx.stroke();
+
+    // Series
+    const colors = opts.colors || ['#3b82f6','#ef4444','#10b981','#f59e0b'];
+    series.forEach((s, si) => {
+        ctx.strokeStyle = colors[si % colors.length];
+        ctx.lineWidth = 2; ctx.beginPath();
+        s.values.forEach((v, i) => {
+            const x = mapX(i, s.values.length, w, pad);
+            const y = mapY(v, min, max, h, pad);
+            if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        });
+        ctx.stroke();
+    });
+}
+
+export function barChart(canvas, labels, series, opts={}){
+    const ctx = canvas.getContext('2d');
+
+    // Tamaño robusto
+    const { w, h } = sizeCanvas(canvas);
+    const pad = 28; const catW = (w - 2*pad) / Math.max(1, labels.length);
+    const colors = opts.colors || ['#3b82f6','#10b981','#ef4444','#f59e0b'];
+    const stacked = !!opts.stacked;
+
+    // calcular rango
+    const sums = labels.map((_,i)=> series.reduce((a,s)=>a+(s.values[i]||0),0));
+    const yVals = stacked ? sums : series.flatMap(s=>s.values);
+    const {min, max} = fitRange(yVals);
+
+    // Limpia y Grid
+    ctx.clearRect(0,0,w,h);
+    ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
+    for (let gy=0; gy<5; ++gy){
+        const y = pad + gy*((h-2*pad)/4);
+        ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w-pad, y); ctx.stroke();
+    }
+    ctx.strokeStyle = '#9ca3af';
+    ctx.beginPath(); ctx.moveTo(pad, pad); ctx.lineTo(pad, h-pad); ctx.lineTo(w-pad, h-pad); ctx.stroke();
+
+    // Barras
+    labels.forEach((_, i) => {
+        if (stacked){
+            let acc = 0;
+            series.forEach((s, si) => {
+                const val = s.values[i]||0;
+                const y0 = mapY(acc, min, max, h, pad);
+                const y1 = mapY(acc+val, min, max, h, pad);
+                const x = pad + i*catW + catW*0.1;
+                const bw = catW*0.8;
+                ctx.fillStyle = colors[si % colors.length];
+                ctx.fillRect(x, y1, bw, y0 - y1);
+                acc += val;
+            });
+        } else {
+            const bw = (catW*0.8) / Math.max(1, series.length);
+            series.forEach((s, si) => {
+                const val = s.values[i]||0;
+                const y0 = mapY(0, min, max, h, pad);
+                const y1 = mapY(val, min, max, h, pad);
+                const x = pad + i*catW + catW*0.1 + si*bw;
+                ctx.fillStyle = colors[si % colors.length];
+                ctx.fillRect(x, y1, bw, y0 - y1);
+            });
+        }
+    });
+}
+
+export function pieChart(canvas, values, labels, opts={}){
+    const ctx = canvas.getContext('2d');
+
+    // Tamaño robusto
+    const { w, h } = sizeCanvas(canvas);
+    ctx.clearRect(0,0,w,h);
+
+    const colors = opts.colors || ['#3b82f6','#10b981','#ef4444','#f59e0b','#8b5cf6','#06b6d4','#84cc16','#f97316'];
+    const sum = values.reduce((a,b)=>a+b,0) || 1;
+    const cx = w/2, cy = h/2, r = Math.min(w,h)*0.38;
+    let start = -Math.PI/2;
+    values.forEach((v, i) => {
+        const ang = (v/sum)*Math.PI*2;
+        ctx.beginPath(); ctx.moveTo(cx,cy);
+        ctx.fillStyle = colors[i % colors.length];
+        ctx.arc(cx,cy,r,start,start+ang,false); ctx.closePath(); ctx.fill();
+        start += ang;
+    });
+    // anillo
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath();
+    ctx.arc(cx,cy,r,0,Math.PI*2); ctx.stroke();
+}
+
+
+--------------------------------------------------
+
+index.html:
+-----------
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <title>Memory Profiler — GUI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="app-header">
+    <h1>Memory Profiler</h1>
+    <div id="status-badge" class="badge badge-warn" aria-live="polite">Conectando…</div>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Pestañas de la aplicación">
+    <button class="tab active" role="tab" aria-selected="true" aria-controls="tab-general" id="tabbtn-general">General</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-mapa" id="tabbtn-mapa">Mapa</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-archivo" id="tabbtn-archivo">Por archivo</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-leaks" id="tabbtn-leaks">Leaks</button>
+</nav>
+
+<main class="tabpanes">
+    <!-- GENERAL -->
+    <section id="tab-general" class="tabpane active" role="tabpanel" aria-labelledby="tabbtn-general">
+        <div class="cards">
+            <div class="card"><div class="kpi-title">Uso actual</div><div id="kpi-current" class="kpi-value">0.00 MB</div></div>
+            <div class="card"><div class="kpi-title">Activas</div><div id="kpi-active" class="kpi-value">0</div></div>
+            <div class="card"><div class="kpi-title">Fugas</div><div id="kpi-leaks" class="kpi-value">0.00 MB</div></div>
+            <div class="card"><div class="kpi-title">Pico</div><div id="kpi-peak" class="kpi-value">0.00 MB</div></div>
+            <div class="card"><div class="kpi-title">Total allocs</div><div id="kpi-total" class="kpi-value">0</div></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h2>Línea de tiempo</h2>
+                <div class="legend"><span class="dot"></span> Memoria (MB) — <span class="dot dot2"></span> Leak (MB)</div>
+            </div>
+            <canvas id="chart-timeline" height="180"></canvas>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h2>Top-3 por archivo</h2>
+            </div>
+            <div class="table-wrap">
+                <table class="zebra">
+                    <thead><tr><th>Archivo</th><th>Conteo</th><th>MB</th></tr></thead>
+                    <tbody id="tbl-top3"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- MAPA -->
+    <section id="tab-mapa" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-mapa">
+        <div class="panel">
+            <div class="panel-head">
+                <h2>Bloques vivos</h2>
+                <div class="actions">
+                    <label>Ordenar:
+                        <select id="blocks-sort">
+                            <option value="ts_desc">Más recientes</option>
+                            <option value="size_desc">Tamaño (desc)</option>
+                            <option value="size_asc">Tamaño (asc)</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table class="zebra">
+                    <thead>
+                    <tr>
+                        <th>Ptr</th><th>Size (B)</th><th>Size (MB)</th><th>file:line</th><th>type</th><th>edad (ms)</th><th>estado</th>
+                    </tr>
+                    </thead>
+                    <tbody id="tbl-blocks"></tbody>
+                </table>
+            </div>
+            <div class="hint">Regla: <span class="badge">normal</span> &middot; <span class="badge badge-warn">envejecido</span> &middot; <span class="badge badge-danger">posible leak</span></div>
+        </div>
+    </section>
+
+    <!-- POR ARCHIVO -->
+    <section id="tab-archivo" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-archivo">
+        <div class="panel">
+            <div class="panel-head">
+                <h2>Estadísticas por archivo</h2>
+                <div class="actions">
+                    <label>Top N:
+                        <input type="number" id="sel-topN" min="3" max="50" value="10" />
+                    </label>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table class="zebra">
+                    <thead>
+                    <tr><th>Archivo</th><th>alloc_count</th><th>alloc_MB</th><th>live_count</th><th>live_MB</th></tr>
+                    </thead>
+                    <tbody id="tbl-files"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head"><h2>Barras — Conteo vs MB</h2></div>
+            <canvas id="chart-files" height="220"></canvas>
+        </div>
+    </section>
+
+    <!-- LEAKS -->
+    <section id="tab-leaks" class="tabpane" role="tabpanel" aria-labelledby="tabbtn-leaks">
+        <div class="cards">
+            <div class="card"><div class="kpi-title">Total fugado</div><div id="kpi-lk-total" class="kpi-value">0.00 MB</div></div>
+            <div class="card"><div class="kpi-title">Leak más grande</div><div id="kpi-lk-largest" class="kpi-value">—</div></div>
+            <div class="card"><div class="kpi-title">Top archivo por leaks</div><div id="kpi-lk-topfile" class="kpi-value">—</div></div>
+            <div class="card"><div class="kpi-title">Leak rate</div><div id="kpi-lk-rate" class="kpi-value">0.00%</div></div>
+        </div>
+
+        <div class="grid-2">
+            <div class="panel">
+                <div class="panel-head"><h2>Fugas por archivo (bytes)</h2></div>
+                <canvas id="chart-leaks-bars" height="220"></canvas>
+            </div>
+            <div class="panel">
+                <div class="panel-head"><h2>Distribución de fugas</h2></div>
+                <canvas id="chart-leaks-pie" height="220"></canvas>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head"><h2>Leak bytes en el tiempo</h2></div>
+            <canvas id="chart-leaks-time" height="180"></canvas>
+        </div>
+    </section>
+</main>
+
+<footer class="app-footer">
+    <span>Polling ~300 ms</span>
+    <span>Umbral leak: <code id="leak-th-ms">30000</code> ms</span>
+</footer>
+
+<script type="module" src="app.js"></script>
+
+</body>
+</html>
+
+
+--------------------------------------------------
+
+style.css:
+----------
+:root{
+    --bg:#f7f7fb;
+    --fg:#1d1e22;
+    --muted:#6b7280;
+    --card:#ffffff;
+    --border:#e5e7eb;
+    --accent:#3b82f6;
+    --warn:#f59e0b;
+    --danger:#ef4444;
+    --ok:#10b981;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+    margin:0;
+    font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial;
+    background:var(--bg);
+    color:var(--fg);
+}
+
+.app-header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 16px; background:#fff; border-bottom:1px solid var(--border);
+    position:sticky; top:0; z-index:5;
+}
+h1{font-size:18px; margin:0}
+
+.badge{
+    display:inline-block; padding:2px 8px; border-radius:999px; background:#e5e7eb; color:#111; font-weight:600
+}
+.badge-warn{ background:rgba(245,158,11,.15); color:#92400e; }
+.badge-danger{ background:rgba(239,68,68,.15); color:#991b1b; }
+.badge-ok{ background:rgba(16,185,129,.15); color:#065f46; }
+
+.tabs{
+    display:flex; gap:8px; padding:8px 12px; background:#fff; border-bottom:1px solid var(--border);
+}
+.tab{
+    border:1px solid var(--border); background:var(--card); border-radius:8px;
+    padding:8px 12px; cursor:pointer; font-weight:600; color:#374151;
+}
+.tab.active{ border-color:var(--accent); color:#111; box-shadow:0 0 0 2px rgba(59,130,246,.1) inset; }
+
+.tabpanes{ padding:12px; max-width:1200px; margin:0 auto; }
+.tabpane{ display:none; }
+.tabpane.active{ display:block; }
+
+.cards{
+    display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:12px;
+}
+@media (max-width:1000px){ .cards{ grid-template-columns:repeat(3,1fr); } }
+@media (max-width:700px){ .cards{ grid-template-columns:repeat(2,1fr); } }
+@media (max-width:480px){ .cards{ grid-template-columns:1fr; } }
+
+.card{
+    background:var(--card); border:1px solid var(--border); border-radius:12px; padding:12px;
+}
+.kpi-title{ color:var(--muted); font-size:12px; margin-bottom:6px; }
+.kpi-value{ font-size:20px; font-weight:800; }
+
+.panel{
+    background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px; margin:12px 0;
+}
+.panel-head{
+    display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;
+}
+.panel h2{ margin:4px 0; font-size:16px; }
+
+.legend{ color:var(--muted); font-size:12px; }
+.legend .dot{ display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--accent); margin:0 6px 0 2px; vertical-align:middle; }
+.legend .dot2{ background:var(--danger); }
+
+.table-wrap{ overflow:auto; max-height:60vh; }
+table{ border-collapse:collapse; width:100%; }
+th, td{ padding:8px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+thead th{ position:sticky; top:0; background:#fff; z-index:2; }
+.zebra tbody tr:nth-child(odd){ background:#fafafa; }
+
+.actions{ color:var(--muted); font-size:12px; display:flex; gap:12px; align-items:center; }
+.actions input, .actions select{ padding:4px 6px; border:1px solid var(--border); border-radius:6px; background:#fff; }
+
+.grid-2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+@media (max-width:900px){ .grid-2{ grid-template-columns:1fr; } }
+
+.app-footer{
+    padding:10px 16px; display:flex; gap:12px; justify-content:space-between;
+    color: var(--muted);                  /* ✅ corregido */
+    border-top:1px solid var(--border); background:#fff; position:sticky; bottom:0;
+}
+
+.hint{ color:var(--muted); font-size:12px; margin-top:6px; }
+code{ background:#eef2ff; padding:2px 6px; border-radius:6px; }
+
+/* ✅ Asegura que el <canvas> crezca con su contenedor y repinte a tamaño real */
+canvas { width: 100%; display: block; }
+
+
+--------------------------------------------------
+
 BrokerClient.h:
 ---------------
 #pragma once
@@ -886,6 +1569,112 @@ private:
     socket_t    sock_ = INVALID_SOCK;
     int         timeout_ms_ = 0;
     std::mutex  m_;
+};
+
+
+--------------------------------------------------
+
+MetricsAggregator.h:
+--------------------
+#pragma once
+#include <string>
+#include <unordered_map>
+#include <deque>
+#include <mutex>
+#include <atomic>
+#include <cstdint>
+#include <vector>
+
+class MetricsAggregator {
+public:
+    struct BlockInfo {
+        std::string ptr;     // clave (texto, ej. "0x7fff...")
+        uint64_t    size = 0;
+        std::string file;
+        int         line = 0;
+        std::string type;
+        bool        is_array = false;
+        uint64_t    ts_ns = 0; // timestamp del ALLOC (ns)
+    };
+
+    struct FileStats {
+        uint64_t alloc_count = 0;  // total ALLOC (histórico)
+        uint64_t alloc_bytes = 0;  // suma de bytes asignados (histórico)
+        uint64_t live_count  = 0;  // actualmente vivos
+        uint64_t live_bytes  = 0;  // bytes vivos actuales
+    };
+
+    struct TimelinePoint {
+        uint64_t t_ns = 0;
+        uint64_t current_bytes = 0;
+        uint64_t leak_bytes = 0;
+    };
+
+    struct LeaksKPIs {
+        uint64_t total_leak_bytes = 0;
+        double   leak_rate = 0.0; // total_leaks / total_allocs
+        struct { std::string file; std::string ptr; uint64_t size = 0; } largest;
+        struct { std::string file; uint64_t count = 0; uint64_t bytes = 0; } top_file_by_leaks;
+    };
+
+    explicit MetricsAggregator(size_t timeline_capacity = 4096);
+
+    // Procesa un evento JSON {"kind":"ALLOC"/"FREE", ...}
+    void processEvent(const std::string& json);
+
+    // Lecturas thread-safe para endpoints
+    void getMetrics(uint64_t& current_bytes,
+                    uint64_t& peak_bytes,
+                    uint64_t& active_allocs,
+                    uint64_t& total_allocs,
+                    uint64_t& leak_bytes) const;
+
+    std::vector<TimelinePoint> getTimeline() const;
+    std::vector<BlockInfo> getBlocks() const;
+    std::unordered_map<std::string, FileStats> getFileStats() const;
+    LeaksKPIs getLeaksKPIs() const;
+
+    // Configuración
+    void setLeakThresholdMs(uint64_t ms);
+    uint64_t getLeakThresholdMs() const;
+
+private:
+    // ====== estado base tipo "contador" ======
+    std::atomic<uint64_t> current_bytes_{0};
+    std::atomic<uint64_t> peak_bytes_{0};
+    std::atomic<uint64_t> active_allocs_{0};
+    std::atomic<uint64_t> total_allocs_{0};
+    std::atomic<uint64_t> leak_threshold_ms_{30000}; // 30 s
+
+    // ====== estado protegido por mutex ======
+    mutable std::mutex mtx_;
+    std::unordered_map<std::string, BlockInfo> live_;        // ptr -> info
+    std::unordered_map<std::string, FileStats> per_file_;    // file -> stats
+    // timeline circular
+    const size_t timeline_cap_;
+    std::deque<TimelinePoint> timeline_;
+
+    // ====== helpers ======
+    static uint64_t now_ns();
+    static uint64_t now_ms();
+
+    // JSON helpers (simples, sin dependencias)
+    static bool extractString(const std::string& json, const std::string& field, std::string& out);
+    static bool extractUint64 (const std::string& json, const std::string& field, uint64_t& out);
+    static bool extractInt    (const std::string& json, const std::string& field, int& out);
+    static bool extractBool   (const std::string& json, const std::string& field, bool& out);
+
+    // Lógica
+    void onAlloc(const std::string& ptr, uint64_t size, uint64_t ts_ns,
+                 const std::string& file, int line,
+                 const std::string& type, bool is_array);
+    void onFree (const std::string& ptr, uint64_t hinted_size);
+
+    uint64_t computeLeakBytes_locked(uint64_t now_ns) const; // requiere mtx_ tomado
+    void pushTimelinePoint_locked(uint64_t t_ns, uint64_t cur_b, uint64_t leak_b);
+
+    // Cálculo de KPIs de leaks (requiere mtx_ tomado)
+    void computeLeaksKPIs_locked(uint64_t now_ns, LeaksKPIs& out) const;
 };
 
 
@@ -1359,6 +2148,340 @@ bool ProfilerClient::set_timeouts() {
     setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 #endif
     return true;
+}
+
+
+--------------------------------------------------
+
+MetricsAggregator.cpp:
+----------------------
+#include "MetricsAggregator.h"
+#include <chrono>
+#include <cctype>
+#include <sstream>
+#include <algorithm>
+
+MetricsAggregator::MetricsAggregator(size_t timeline_capacity)
+    : timeline_cap_(timeline_capacity ? timeline_capacity : 4096) {}
+
+uint64_t MetricsAggregator::now_ns() {
+    using namespace std::chrono;
+    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+}
+uint64_t MetricsAggregator::now_ms() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+// ------- JSON helpers (similares a los de MetricsCalculator, auto-contenidos) -------
+namespace {
+inline void skipSpaces(const std::string& s, size_t& i) {
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+}
+bool parseJSONStringAt(const std::string& s, size_t& i, std::string& out) {
+    skipSpaces(s, i);
+    if (i >= s.size() || s[i] != '"') return false;
+    ++i;
+    std::string acc;
+    while (i < s.size()) {
+        char c = s[i++];
+        if (c == '\\') {
+            if (i >= s.size()) break;
+            char e = s[i++];
+            if (e == '"' || e == '\\' || e == '/') acc.push_back(e);
+            else if (e == 'b') acc.push_back('\b');
+            else if (e == 'f') acc.push_back('\f');
+            else if (e == 'n') acc.push_back('\n');
+            else if (e == 'r') acc.push_back('\r');
+            else if (e == 't') acc.push_back('\t');
+            else acc.push_back(e);
+        } else if (c == '"') {
+            out.swap(acc);
+            return true;
+        } else {
+            acc.push_back(c);
+        }
+    }
+    return false;
+}
+bool seekFieldValue(const std::string& json, const std::string& field, size_t& i) {
+    const std::string quoted = "\"" + field + "\"";
+    size_t pos = json.find(quoted, i);
+    if (pos == std::string::npos) return false;
+    pos += quoted.size();
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+    if (pos >= json.size() || json[pos] != ':') return false;
+    ++pos;
+    i = pos;
+    return true;
+}
+} // anon
+
+bool MetricsAggregator::extractString(const std::string& json, const std::string& field, std::string& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    return parseJSONStringAt(json, i, out);
+}
+bool MetricsAggregator::extractBool(const std::string& json, const std::string& field, bool& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    skipSpaces(json, i);
+    if (json.compare(i, 4, "true") == 0) { out = true;  return true; }
+    if (json.compare(i, 5, "false") == 0){ out = false; return true; }
+    return false;
+}
+bool MetricsAggregator::extractUint64(const std::string& json, const std::string& field, uint64_t& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    skipSpaces(json, i);
+    if (i < json.size() && json[i] == '"') {
+        std::string tmp;
+        if (!parseJSONStringAt(json, i, tmp)) return false;
+        if (tmp.rfind("0x", 0) == 0 || tmp.rfind("0X", 0) == 0) {
+            char* endp = nullptr;
+            unsigned long long v = std::strtoull(tmp.c_str(), &endp, 16);
+            out = static_cast<uint64_t>(v);
+            return true;
+        } else {
+            char* endp = nullptr;
+            unsigned long long v = std::strtoull(tmp.c_str(), &endp, 10);
+            out = static_cast<uint64_t>(v);
+            return true;
+        }
+    } else {
+        uint64_t v = 0; bool any = false;
+        while (i < json.size() && std::isdigit(static_cast<unsigned char>(json[i]))) {
+            any = true;
+            v = v * 10 + static_cast<uint64_t>(json[i] - '0');
+            ++i;
+        }
+        if (!any) return false;
+        out = v;
+        return true;
+    }
+}
+bool MetricsAggregator::extractInt(const std::string& json, const std::string& field, int& out) {
+    uint64_t u = 0;
+    if (!extractUint64(json, field, u)) return false;
+    out = static_cast<int>(u);
+    return true;
+}
+
+// ------- lógica -------
+void MetricsAggregator::onAlloc(const std::string& ptr, uint64_t size, uint64_t ts_ns,
+                                const std::string& file, int line,
+                                const std::string& type, bool is_array) {
+    total_allocs_.fetch_add(1, std::memory_order_relaxed);
+    active_allocs_.fetch_add(1, std::memory_order_relaxed);
+    uint64_t cur = current_bytes_.fetch_add(size, std::memory_order_relaxed) + size;
+
+    // peak
+    uint64_t old_peak = peak_bytes_.load(std::memory_order_relaxed);
+    while (cur > old_peak &&
+           !peak_bytes_.compare_exchange_weak(old_peak, cur, std::memory_order_relaxed)) {}
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        // registrar bloque
+        BlockInfo bi;
+        bi.ptr = ptr; bi.size = size; bi.file = file; bi.line = line; bi.type = type; bi.is_array = is_array; bi.ts_ns = ts_ns;
+        live_[ptr] = bi;
+
+        // actualizar por archivo
+        auto& fs = per_file_[file];
+        fs.alloc_count += 1;
+        fs.alloc_bytes += size;
+        fs.live_count  += 1;
+        fs.live_bytes  += size;
+
+        // timeline (usar now_ns para eje t)
+        uint64_t t = now_ns();
+        uint64_t leak_b = computeLeakBytes_locked(t);
+        pushTimelinePoint_locked(t, cur, leak_b);
+    }
+}
+
+void MetricsAggregator::onFree(const std::string& ptr, uint64_t hinted_size) {
+    uint64_t sub = 0;
+    std::string file;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto it = live_.find(ptr);
+        if (it != live_.end()) {
+            sub = it->second.size;
+            file = it->second.file;
+            // actualizar por archivo
+            auto fit = per_file_.find(file);
+            if (fit != per_file_.end()) {
+                if (fit->second.live_count > 0)  fit->second.live_count -= 1;
+                if (fit->second.live_bytes >= sub) fit->second.live_bytes -= sub;
+                else fit->second.live_bytes = 0;
+            }
+            live_.erase(it);
+        }
+
+        if (sub > 0) {
+            // timeline point después de restar
+            uint64_t cur_after = current_bytes_.load(std::memory_order_relaxed) - sub; // aún no aplicado
+            uint64_t t = now_ns();
+            uint64_t leak_b = computeLeakBytes_locked(t);
+            // (no aún: actualizamos current fuera del lock para no mezclar)
+            // guardamos el punto al final tras ajustar current_bytes_
+            // para ser exactos, lo añadimos después del fetch_sub más abajo
+            // aquí no empujamos
+        }
+    }
+
+    if (sub > 0) {
+        current_bytes_.fetch_sub(sub, std::memory_order_relaxed);
+        active_allocs_.fetch_sub(1, std::memory_order_relaxed);
+
+        // push timeline con valores ya aplicados
+        std::lock_guard<std::mutex> lk(mtx_);
+        uint64_t t = now_ns();
+        uint64_t cur = current_bytes_.load(std::memory_order_relaxed);
+        uint64_t leak_b = computeLeakBytes_locked(t);
+        pushTimelinePoint_locked(t, cur, leak_b);
+    } else {
+        (void)hinted_size;
+    }
+}
+
+uint64_t MetricsAggregator::computeLeakBytes_locked(uint64_t now_ns_val) const {
+    const uint64_t threshold_ns = leak_threshold_ms_.load(std::memory_order_relaxed) * 1000000ULL;
+    uint64_t leak = 0;
+    for (const auto& kv : live_) {
+        const auto& bi = kv.second;
+        if (now_ns_val > bi.ts_ns && (now_ns_val - bi.ts_ns) > threshold_ns) {
+            leak += bi.size;
+        }
+    }
+    return leak;
+}
+
+void MetricsAggregator::pushTimelinePoint_locked(uint64_t t_ns, uint64_t cur_b, uint64_t leak_b) {
+    timeline_.push_back(TimelinePoint{t_ns, cur_b, leak_b});
+    if (timeline_.size() > timeline_cap_) timeline_.pop_front();
+}
+
+void MetricsAggregator::computeLeaksKPIs_locked(uint64_t now_ns_val, LeaksKPIs& out) const {
+    const uint64_t threshold_ns = leak_threshold_ms_.load(std::memory_order_relaxed) * 1000000ULL;
+    // Por archivo
+    std::unordered_map<std::string, std::pair<uint64_t/*count*/, uint64_t/*bytes*/>> per_file_leaks;
+
+    uint64_t count_leaks = 0;
+    uint64_t total_leak_b = 0;
+
+    // largest
+    uint64_t max_b = 0;
+    std::string max_ptr, max_file;
+
+    for (const auto& kv : live_) {
+        const auto& bi = kv.second;
+        if (now_ns_val > bi.ts_ns && (now_ns_val - bi.ts_ns) > threshold_ns) {
+            ++count_leaks;
+            total_leak_b += bi.size;
+            auto& pf = per_file_leaks[bi.file];
+            pf.first  += 1;
+            pf.second += bi.size;
+
+            if (bi.size > max_b) {
+                max_b = bi.size;
+                max_ptr = bi.ptr;
+                max_file= bi.file;
+            }
+        }
+    }
+
+    // top_file_by_leaks
+    std::string top_file;
+    uint64_t top_count = 0, top_bytes = 0;
+    for (const auto& kv : per_file_leaks) {
+        if (kv.second.first > top_count || (kv.second.first == top_count && kv.second.second > top_bytes)) {
+            top_file  = kv.first;
+            top_count = kv.second.first;
+            top_bytes = kv.second.second;
+        }
+    }
+
+    out.total_leak_bytes = total_leak_b;
+    const uint64_t total_allocs = total_allocs_.load(std::memory_order_relaxed);
+    out.leak_rate = (total_allocs > 0) ? (double)count_leaks / (double)total_allocs : 0.0;
+    out.largest.file = max_file;
+    out.largest.ptr  = max_ptr;
+    out.largest.size = max_b;
+    out.top_file_by_leaks.file  = top_file;
+    out.top_file_by_leaks.count = top_count;
+    out.top_file_by_leaks.bytes = top_bytes;
+}
+
+void MetricsAggregator::processEvent(const std::string& json) {
+    std::string kind;
+    if (!extractString(json, "kind", kind)) return;
+
+    if (kind == "ALLOC") {
+        std::string ptr, file, type;
+        uint64_t size = 0, ts_ns = 0;
+        int line = 0; bool is_arr = false;
+        extractString(json, "ptr", ptr);
+        extractUint64(json, "size", size);
+        extractUint64(json, "ts_ns", ts_ns);
+        extractString(json, "file", file);
+        extractInt   (json, "line", line);
+        extractString(json, "type", type);
+        extractBool  (json, "is_array", is_arr);
+        if (!ptr.empty() && size > 0) onAlloc(ptr, size, ts_ns, file, line, type, is_arr);
+    } else if (kind == "FREE") {
+        std::string ptr; uint64_t hinted = 0;
+        extractString(json, "ptr", ptr);
+        extractUint64(json, "size", hinted);
+        if (!ptr.empty()) onFree(ptr, hinted);
+    }
+}
+
+void MetricsAggregator::getMetrics(uint64_t& current_bytes,
+                                   uint64_t& peak_bytes,
+                                   uint64_t& active_allocs,
+                                   uint64_t& total_allocs,
+                                   uint64_t& leak_bytes) const {
+    current_bytes = current_bytes_.load(std::memory_order_relaxed);
+    peak_bytes    = peak_bytes_.load(std::memory_order_relaxed);
+    active_allocs = active_allocs_.load(std::memory_order_relaxed);
+    total_allocs  = total_allocs_.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lk(mtx_);
+    leak_bytes    = computeLeakBytes_locked(now_ns());
+}
+
+std::vector<MetricsAggregator::TimelinePoint> MetricsAggregator::getTimeline() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return std::vector<TimelinePoint>(timeline_.begin(), timeline_.end());
+}
+
+std::vector<MetricsAggregator::BlockInfo> MetricsAggregator::getBlocks() const {
+    std::vector<BlockInfo> out;
+    std::lock_guard<std::mutex> lk(mtx_);
+    out.reserve(live_.size());
+    for (const auto& kv : live_) out.push_back(kv.second);
+    return out;
+}
+
+std::unordered_map<std::string, MetricsAggregator::FileStats> MetricsAggregator::getFileStats() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return per_file_;
+}
+
+MetricsAggregator::LeaksKPIs MetricsAggregator::getLeaksKPIs() const {
+    LeaksKPIs k{};
+    std::lock_guard<std::mutex> lk(mtx_);
+    computeLeaksKPIs_locked(now_ns(), k);
+    return k;
+}
+
+void MetricsAggregator::setLeakThresholdMs(uint64_t ms) {
+    leak_threshold_ms_.store(ms, std::memory_order_relaxed);
+}
+uint64_t MetricsAggregator::getLeakThresholdMs() const {
+    return leak_threshold_ms_.load(std::memory_order_relaxed);
 }
 
 
@@ -2102,10 +3225,12 @@ gui_http_server.cpp:
 #include <chrono>
 #include <cctype>
 #include <filesystem>
-#include <iomanip>  // <- importante
-#include "NetUtils.h"          // socket_t, CLOSESOCK, WSAInit
-#include "BrokerClient.h"      // cliente al broker
-#include "MetricsCalculator.h" // snapshot
+#include <iomanip>
+
+#include "NetUtils.h"
+#include "BrokerClient.h"
+#include "Protocol.h"          // <-- para protocol::TOPIC_MEMORY_UPDATE
+#include "MetricsAggregator.h" // agregador de métricas
 
 #ifdef _WIN32
   #include <winsock2.h>
@@ -2116,8 +3241,7 @@ gui_http_server.cpp:
   #include <unistd.h>
 #endif
 
-// ===== Utilidades HTTP muy mínimas (sin dependencias) =====
-
+// ===== Utilidades HTTP =====
 static std::string mime_for(const std::string& path) {
     auto dot = path.find_last_of('.');
     std::string ext = (dot == std::string::npos) ? "" : path.substr(dot + 1);
@@ -2156,21 +3280,15 @@ static void http_send_response(socket_t s, int code, const char* status,
 }
 
 static bool http_read_request(socket_t s, std::string& method, std::string& path) {
-    // Leer hasta "\r\n\r\n"
     std::string req;
     char buf[2048];
     for (;;) {
-#ifdef _WIN32
         int n = ::recv(s, buf, sizeof(buf), 0);
-#else
-        int n = ::recv(s, buf, sizeof(buf), 0);
-#endif
         if (n <= 0) break;
         req.append(buf, buf + n);
         if (req.find("\r\n\r\n") != std::string::npos) break;
-        if (req.size() > 16384) break; // límite simple
+        if (req.size() > 16384) break;
     }
-    // Primera línea: "GET /ruta HTTP/1.1"
     auto pos = req.find("\r\n");
     if (pos == std::string::npos) return false;
     std::string line = req.substr(0, pos);
@@ -2198,31 +3316,25 @@ static std::string url_decode(const std::string& in) {
     return out;
 }
 
-// Sanitiza el path: sin "..", sin backslashes, default a /index.html
 static std::filesystem::path safe_join(const std::filesystem::path& root, std::string path) {
     if (path.empty() || path == "/") path = "/index.html";
-    // quitar querystring
     if (auto q = path.find('?'); q != std::string::npos) path = path.substr(0, q);
     path = url_decode(path);
-    // normalizar separadores
     for (auto& c : path) if (c == '\\') c = '/';
-    // bloquear directory traversal
     if (path.find("..") != std::string::npos) return {};
-    // quitar prefijo '/'
     if (!path.empty() && path.front() == '/') path.erase(0, 1);
     return root / path;
 }
 
-// ===== Hilo que bombea eventos del broker hacia MetricsCalculator =====
-
+// ===== Bomba de eventos broker → agregador =====
 struct PumpConfig {
     std::string host = "127.0.0.1";
     uint16_t    port = 5000;
     std::string app  = "GUI-HTTP";
-    std::string topic= "MEMORY_UPDATE";
+    std::string topic= protocol::TOPIC_MEMORY_UPDATE; // <-- alineado con test_socket
 };
 
-static void broker_pump_thread(const PumpConfig cfg, MetricsCalculator* calc, std::atomic<bool>* stop_flag) {
+static void broker_pump_thread(const PumpConfig cfg, MetricsAggregator* agg, std::atomic<bool>* stop_flag) {
     BrokerClient client;
     client.configure(cfg.host, cfg.port, cfg.app);
 
@@ -2240,24 +3352,21 @@ static void broker_pump_thread(const PumpConfig cfg, MetricsCalculator* calc, st
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
-        calc->processEvent(ev);
+        agg->processEvent(ev);
     }
 }
 
 // ===== Servidor HTTP principal =====
-
 int main(int argc, char** argv) {
-    net::WSAInit wsa; // RAII para Windows
+    net::WSAInit wsa;
 
-    // Parámetros por defecto
     uint16_t http_port = 8080;
-    std::filesystem::path static_dir = "../gui"; // relativo al build dir
+    std::filesystem::path static_dir = "../gui";
     PumpConfig pump;
 
-    // Parseo simple de args: --port=8080 --static-dir=C:\...\gui --host=127.0.0.1 --bport=5000 --app=GUI-HTTP
     for (int i=1; i<argc; ++i) {
         std::string a = argv[i];
-        auto getv = [&](const char* key)->std::string {
+        auto getv = [&](const char* /*key*/)->std::string {
             auto p = a.find('=');
             return (p==std::string::npos) ? "" : a.substr(p+1);
         };
@@ -2266,22 +3375,20 @@ int main(int argc, char** argv) {
         else if (a.rfind("--host=",0)==0) pump.host = getv("--host=");
         else if (a.rfind("--bport=",0)==0) pump.port = static_cast<uint16_t>(std::stoi(getv("--bport=")));
         else if (a.rfind("--app=",0)==0) pump.app = getv("--app=");
+        else if (a.rfind("--topic=",0)==0) pump.topic = getv("--topic="); // opcional, por si quieres cambiarlo
     }
 
-    // Normaliza static_dir (absoluta)
-    try { static_dir = std::filesystem::weakly_canonical(static_dir); } catch(...) {}
+    try { static_dir = std::filesystem::weakly_canonical(static_dir); } catch (...) {}
     std::cerr << "[gui_http] Static dir: " << static_dir.string() << "\n";
-    std::cerr << "[gui_http] Broker: " << pump.host << ":" << pump.port << " app=" << pump.app << "\n";
+    std::cerr << "[gui_http] Broker: " << pump.host << ":" << pump.port << " app=" << pump.app << " topic=" << pump.topic << "\n";
     std::cerr << "[gui_http] HTTP:   127.0.0.1:" << http_port << "\n";
 
-    // Estado de métricas
-    MetricsCalculator calc;
+    MetricsAggregator agg(4096);
+    // agg.setLeakThresholdMs(30000);
 
-    // Arranca hilo de broker → métricas
     std::atomic<bool> stop{false};
-    std::thread th_pump(broker_pump_thread, pump, &calc, &stop);
+    std::thread th_pump(broker_pump_thread, pump, &agg, &stop);
 
-    // Socket escucha HTTP
     socket_t srv = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (IS_INVALID(srv)) {
         std::cerr << "[gui_http] ERROR: no pude crear socket HTTP\n";
@@ -2289,8 +3396,6 @@ int main(int argc, char** argv) {
         th_pump.join();
         return 1;
     }
-
-    // Reuseaddr
     int yes = 1;
 #ifdef _WIN32
     setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
@@ -2298,11 +3403,8 @@ int main(int argc, char** argv) {
     setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 #endif
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(http_port);
+    sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(http_port);
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-
     if (::bind(srv, (sockaddr*)&addr, sizeof(addr)) < 0) {
         std::cerr << "[gui_http] ERROR: bind puerto " << http_port << "\n";
         CLOSESOCK(srv);
@@ -2319,8 +3421,6 @@ int main(int argc, char** argv) {
     }
 
     std::cerr << "[gui_http] Sirviendo HTTP en http://127.0.0.1:" << http_port << "/ (ENTER para salir)\n";
-
-    // Hilo para leer ENTER y salir
     std::thread th_quit([&]{
         (void)getchar();
         stop.store(true);
@@ -2332,7 +3432,6 @@ int main(int argc, char** argv) {
 #endif
     });
 
-    // Loop de aceptación
     while (!stop.load()) {
         sockaddr_in cli{}; socklen_t clen = sizeof(cli);
         socket_t c = ::accept(srv, (sockaddr*)&cli, &clen);
@@ -2342,48 +3441,126 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        // Manejo por conexión (sin threads por simplicidad, es rápido)
         std::string method, path;
         if (!http_read_request(c, method, path)) {
             http_send_response(c, 400, "Bad Request", "text/plain; charset=utf-8", "Bad Request");
-            CLOSESOCK(c);
-            continue;
+            CLOSESOCK(c); continue;
         }
-
         if (method != "GET") {
             http_send_response(c, 405, "Method Not Allowed", "text/plain; charset=utf-8", "Only GET");
-            CLOSESOCK(c);
-            continue;
+            CLOSESOCK(c); continue;
         }
 
+        // ====== ENDPOINTS JSON ======
         if (path == "/metrics") {
-            // Construye el JSON a partir del snapshot
-            MetricsSnapshot s = calc.getSnapshot();
+            uint64_t cur=0, peak=0, active=0, total=0, leak=0;
+            agg.getMetrics(cur, peak, active, total, leak);
             std::ostringstream oss;
-            oss << std::fixed << std::setprecision(2);
             oss << "{"
-                << "\"current_mb\":"    << s.current_mb    << ","
-                << "\"active_allocs\":" << s.active_allocs << ","
-                << "\"leak_mb\":"       << s.leak_mb       << ","
-                << "\"peak_mb\":"       << s.peak_mb       << ","
-                << "\"total_allocs\":"  << s.total_allocs  << ","
-                << "\"timestamp_ms\":"  << s.timestamp_ms  << ","
-                << "\"ok\":true,"
-                << "\"source\":\"MEMORY_UPDATE\""
+                << "\"current_bytes\":" << cur << ","
+                << "\"peak_bytes\":"    << peak << ","
+                << "\"active_allocs\":" << active << ","
+                << "\"total_allocs\":"  << total << ","
+                << "\"leak_bytes\":"    << leak
                 << "}";
-            std::string body = oss.str();
-            http_send_response(c, 200, "OK", "application/json; charset=utf-8", body);
-            CLOSESOCK(c);
-            continue;
+            http_send_response(c, 200, "OK", "application/json; charset=utf-8", oss.str());
+            CLOSESOCK(c); continue;
         }
 
-        // Servir archivo estático
+        if (path == "/timeline") {
+            auto t = agg.getTimeline();
+            std::ostringstream oss;
+            oss << "[";
+            for (size_t i=0; i<t.size(); ++i) {
+                if (i) oss << ",";
+                oss << "{"
+                    << "\"t_ns\":" << t[i].t_ns << ","
+                    << "\"current_bytes\":" << t[i].current_bytes << ","
+                    << "\"leak_bytes\":"    << t[i].leak_bytes
+                    << "}";
+            }
+            oss << "]";
+            http_send_response(c, 200, "OK", "application/json; charset=utf-8", oss.str());
+            CLOSESOCK(c); continue;
+        }
+
+        if (path == "/blocks") {
+            auto v = agg.getBlocks();
+            auto q = [](const std::string& s){ std::ostringstream o; o << "\"";
+                for (char ch: s){ if (ch=='"'||ch=='\\') o<<'\\'<<ch; else o<<ch; } o<<"\""; return o.str(); };
+
+            std::ostringstream oss;
+            oss << "[";
+            for (size_t i=0; i<v.size(); ++i) {
+                if (i) oss << ",";
+                oss << "{"
+                    << "\"ptr\":"      << q(v[i].ptr)  << ","
+                    << "\"size\":"     << v[i].size    << ","
+                    << "\"file\":"     << q(v[i].file) << ","  // <-- corregido
+                    << "\"line\":"     << v[i].line    << ","
+                    << "\"type\":"     << q(v[i].type) << ","
+                    << "\"is_array\":" << (v[i].is_array ? "true" : "false") << ","
+                    << "\"ts_ns\":"    << v[i].ts_ns
+                    << "}";
+            }
+            oss << "]";
+            http_send_response(c, 200, "OK", "application/json; charset=utf-8", oss.str());
+            CLOSESOCK(c); continue;
+        }
+
+        if (path == "/file-stats") {
+            auto m = agg.getFileStats();
+            auto qk = [](const std::string& s){ std::ostringstream o; o << "\"";
+                for (char ch: s){ if (ch=='"'||ch=='\\') o<<'\\'<<ch; else o<<ch; } o<<"\""; return o.str(); };
+
+            std::ostringstream oss;
+            oss << "{";
+            bool first = true;
+            for (const auto& kv : m) {
+                if (!first) oss << ",";
+                first = false;
+                oss << qk(kv.first) << ":{"
+                    << "\"alloc_count\":" << kv.second.alloc_count << ","
+                    << "\"alloc_bytes\":" << kv.second.alloc_bytes << ","
+                    << "\"live_count\":"  << kv.second.live_count  << ","
+                    << "\"live_bytes\":"  << kv.second.live_bytes
+                    << "}";
+            }
+            oss << "}";
+            http_send_response(c, 200, "OK", "application/json; charset=utf-8", oss.str());
+            CLOSESOCK(c); continue;
+        }
+
+        if (path == "/leaks") {
+            auto k = agg.getLeaksKPIs();
+            auto q = [](const std::string& s){ std::ostringstream o; o << "\"";
+                for (char ch: s){ if (ch=='"'||ch=='\\') o<<'\\'<<ch; else o<<ch; } o<<"\""; return o.str(); };
+            std::ostringstream oss;
+            oss << "{"
+                << "\"total_leak_bytes\":" << k.total_leak_bytes << ","
+                << std::fixed << std::setprecision(6)
+                << "\"leak_rate\":"        << k.leak_rate << ","
+                << "\"largest\":{"
+                    << "\"file\":" << q(k.largest.file) << ","
+                    << "\"ptr\":"  << q(k.largest.ptr)  << ","
+                    << "\"size\":" << k.largest.size
+                << "},"
+                << "\"top_file_by_leaks\":{"
+                    << "\"file\":"  << q(k.top_file_by_leaks.file)  << ","
+                    << "\"count\":" << k.top_file_by_leaks.count    << ","
+                    << "\"bytes\":" << k.top_file_by_leaks.bytes
+                << "}"
+            << "}";
+            http_send_response(c, 200, "OK", "application/json; charset=utf-8", oss.str());
+            CLOSESOCK(c); continue;
+        }
+
+        // ===== estáticos =====
         std::filesystem::path full = safe_join(static_dir, path);
         std::string body;
         if (full.empty() || !read_file(full, body)) {
             http_send_response(c, 404, "Not Found", "text/plain; charset=utf-8", "404 Not Found");
-            CLOSESOCK(c);
-            continue;
+            CLOSESOCK(c); continue;
         }
         const std::string ctype = mime_for(full.string());
         http_send_response(c, 200, "OK", ctype.c_str(), body);
