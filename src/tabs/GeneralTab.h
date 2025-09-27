@@ -5,8 +5,6 @@
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
 
-// En Qt5 las clases están en el namespace QtCharts y hay que habilitarlo;
-// en Qt6 normalmente están disponibles sin prefijo.
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
   #include <QtCharts/QChartGlobal>
   QT_CHARTS_USE_NAMESPACE
@@ -21,14 +19,24 @@ class GeneralTab : public QWidget {
     explicit GeneralTab(QWidget* parent=nullptr);
     void updateSnapshot(const MetricsSnapshot& s);
 private:
+    // métricas de cabecera
     QLabel* heapCur_  = nullptr;
     QLabel* heapPeak_ = nullptr;
+    QLabel* activeAllocs_ = nullptr;  // NUEVO
+    QLabel* leakMb_       = nullptr;  // NUEVO
+    QLabel* totalAllocs_  = nullptr;  // NUEVO
 
-    QChartView*  allocChart_  = nullptr;   // <- SIN QtCharts::
+    // charts existentes
+    QChartView*  allocChart_  = nullptr;
     QLineSeries* allocSeries_ = nullptr;
 
     QChartView*  freeChart_   = nullptr;
     QLineSeries* freeSeries_  = nullptr;
 
-    int t_ = 0;
+    // NUEVO: serie MB vs tiempo
+    QChartView*  memChart_   = nullptr;
+    QLineSeries* memSeries_  = nullptr;
+
+    double t_ = 0.0; // tiempo en segundos para la serie
 };
+

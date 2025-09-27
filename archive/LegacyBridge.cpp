@@ -1,6 +1,6 @@
 #include "LegacyBridge.h"
 
-#include "memprof.hpp"     // eventos legacy
+#include "../Legacy/memprof.hpp"
 #include "Protocol.h"      // tópicos y encode
 #include "MemoryTracker.h" // ProfilerClient (SDK)
 

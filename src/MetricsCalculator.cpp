@@ -1,5 +1,5 @@
 #include "MetricsCalculator.h"
-
+#include <mutex>  // asegúrate de tener este include arriba del archivo
 #include <sstream>
 #include <iomanip>
 #include <cctype>

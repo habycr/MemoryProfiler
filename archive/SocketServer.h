@@ -7,8 +7,8 @@
 #include <deque>
 #include <mutex>
 #include <optional>
-#include "Protocol.h"
-#include "NetUtils.h"   // <— usar utilidades comunes
+#include "../include/Protocol.h"
+#include "../include/NetUtils.h"
 
 // Broker pub/sub con SUBSCRIBE/UNSUBSCRIBE/PUBLISH/RECEIVE
 class SocketServer {
