@@ -22,18 +22,19 @@ endif()
 
 # ---------- Fuentes GUI ----------
 set(GUI_SRC
-        src/main.cpp
-        src/MainWindow.cpp
-        src/tabs/GeneralTab.cpp
-        src/tabs/MapTab.cpp
-        src/tabs/PerFileTab.cpp
-        src/tabs/LeaksTab.cpp
-        src/net/ServerWorker.cpp
-        src/model/Reducers.cpp
-        src/model/TableModels.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/MainWindow.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/tabs/GeneralTab.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/tabs/MapTab.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/tabs/PerFileTab.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/tabs/LeaksTab.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/net/ServerWorker.cpp   # <- AQUI EXPLÍCITO
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/model/Reducers.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/model/TableModels.cpp
 )
 
 add_executable(memory_profiler_gui ${GUI_SRC})
+
 target_include_directories(memory_profiler_gui PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}        # raíz (para "Legacy/..."/"include/...")
         ${CMAKE_CURRENT_SOURCE_DIR}/src
