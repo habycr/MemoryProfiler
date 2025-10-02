@@ -1,6 +1,7 @@
 #pragma once
 #include <QWidget>
 
+#include <QtCharts/QChart>
 #include <QtCharts/QChartView>
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
@@ -11,6 +12,7 @@
 #endif
 
 class QLabel;
+class QTableWidget;
 struct MetricsSnapshot;
 
 class GeneralTab : public QWidget {
@@ -18,25 +20,31 @@ class GeneralTab : public QWidget {
   public:
     explicit GeneralTab(QWidget* parent=nullptr);
     void updateSnapshot(const MetricsSnapshot& s);
+
 private:
-    // métricas de cabecera
-    QLabel* heapCur_  = nullptr;
-    QLabel* heapPeak_ = nullptr;
-    QLabel* activeAllocs_ = nullptr;  // NUEVO
-    QLabel* leakMb_       = nullptr;  // NUEVO
-    QLabel* totalAllocs_  = nullptr;  // NUEVO
+    // --- KPIs de cabecera ---
+    QLabel* heapCur_       = nullptr;
+    QLabel* heapPeak_      = nullptr;
+    QLabel* activeAllocs_  = nullptr;
+    QLabel* leakMb_        = nullptr;
+    QLabel* totalAllocs_   = nullptr;
 
-    // charts existentes
-    QChartView*  allocChart_  = nullptr;
-    QLineSeries* allocSeries_ = nullptr;
+    // --- Charts: allocs/s y frees/s (se mantienen como en tu versión) ---
+    QChartView*  allocChart_   = nullptr;
+    QLineSeries* allocSeries_  = nullptr;
 
-    QChartView*  freeChart_   = nullptr;
-    QLineSeries* freeSeries_  = nullptr;
+    QChartView*  freeChart_    = nullptr;
+    QLineSeries* freeSeries_   = nullptr;
 
-    // NUEVO: serie MB vs tiempo
-    QChartView*  memChart_   = nullptr;
-    QLineSeries* memSeries_  = nullptr;
+    // --- Memoria vs tiempo (MB) — corregido para evitar doble trazo ---
+    QChartView*  memChartView_ = nullptr;   // vista
+    QChart*      memChart_     = nullptr;   // chart real
+    QLineSeries* memSeries_    = nullptr;   // ÚNICA serie
+    QValueAxis*  axX_mem_      = nullptr;   // eje X persistente
+    QValueAxis*  axY_mem_      = nullptr;   // eje Y persistente
+
+    // Top 3 por archivo (archivo | allocs | MB)
+    QTableWidget* top3_ = nullptr;
 
     double t_ = 0.0; // tiempo en segundos para la serie
 };
-

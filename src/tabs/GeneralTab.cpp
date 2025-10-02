@@ -4,7 +4,11 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QAbstractItemView>
 #include <QtMath>
+#include <algorithm>
 
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
 using namespace QtCharts; // Qt5
@@ -38,36 +42,35 @@ GeneralTab::GeneralTab(QWidget* parent) : QWidget(parent) {
   topRow->addStretch(1);
   root->addLayout(topRow);
 
-  // ----- Memoria vs tiempo (MB) -----
+  // ================= Memoria vs tiempo (MB) =================
+  // ÚNICA serie y sin OpenGL para evitar artefactos de doble trazo
   memSeries_ = new QLineSeries();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-  memSeries_->setUseOpenGL(true);
-#endif
-  auto* memChart = new QChart();
-  memChart->legend()->hide();
-  memChart->addSeries(memSeries_);
+  // memSeries_->setUseOpenGL(true); // <- DESACTIVADO a propósito
 
-  auto* axX_mem = new QValueAxis();
-  axX_mem->setTitleText("t (s)");
-  axX_mem->setRange(0.0, 60.0);
-  auto* axY_mem = new QValueAxis();
-  axY_mem->setTitleText("MB");
-  axY_mem->setRange(0.0, 1.0);
+  memChart_ = new QChart();
+  memChart_->legend()->hide();
+  memChart_->addSeries(memSeries_);
 
-  memChart->addAxis(axX_mem, Qt::AlignBottom);
-  memChart->addAxis(axY_mem, Qt::AlignLeft);
-  memSeries_->attachAxis(axX_mem);
-  memSeries_->attachAxis(axY_mem);
+  axX_mem_ = new QValueAxis();
+  axX_mem_->setTitleText("t (s)");
+  axX_mem_->setRange(0.0, 60.0);
 
-  memChart_ = new QChartView(memChart);
-  memChart_->setRenderHint(QPainter::Antialiasing);
-  root->addWidget(memChart_);
+  axY_mem_ = new QValueAxis();
+  axY_mem_->setTitleText("MB");
+  axY_mem_->setRange(0.0, 1.0);
 
-  // ----- Chart de allocs/s -----
+  memChart_->addAxis(axX_mem_, Qt::AlignBottom);
+  memChart_->addAxis(axY_mem_, Qt::AlignLeft);
+  memSeries_->attachAxis(axX_mem_);
+  memSeries_->attachAxis(axY_mem_);
+
+  memChartView_ = new QChartView(memChart_);
+  memChartView_->setRenderHint(QPainter::Antialiasing);
+  root->addWidget(memChartView_);
+
+  // ================= Chart de allocs/s =================
   allocSeries_ = new QLineSeries();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-  allocSeries_->setUseOpenGL(true);
-#endif
+  // allocSeries_->setUseOpenGL(true); // opcional; si ves “doble línea”, déjalo OFF
   auto* allocChart = new QChart();
   allocChart->legend()->hide();
   allocChart->addSeries(allocSeries_);
@@ -79,11 +82,9 @@ GeneralTab::GeneralTab(QWidget* parent) : QWidget(parent) {
   allocChart_->setRenderHint(QPainter::Antialiasing);
   root->addWidget(allocChart_);
 
-  // ----- Chart de frees/s -----
+  // ================= Chart de frees/s =================
   freeSeries_ = new QLineSeries();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-  freeSeries_->setUseOpenGL(true);
-#endif
+  // freeSeries_->setUseOpenGL(true); // opcional; si ves “doble línea”, déjalo OFF
   auto* freeChart = new QChart();
   freeChart->legend()->hide();
   freeChart->addSeries(freeSeries_);
@@ -94,6 +95,16 @@ GeneralTab::GeneralTab(QWidget* parent) : QWidget(parent) {
   freeChart_ = new QChartView(freeChart);
   freeChart_->setRenderHint(QPainter::Antialiasing);
   root->addWidget(freeChart_);
+
+  // ----- Top-3 por archivo -----
+  top3_ = new QTableWidget(3, 3, this);
+  QStringList headers; headers << "Archivo" << "Allocs" << "MB";
+  top3_->setHorizontalHeaderLabels(headers);
+  top3_->verticalHeader()->setVisible(false);
+  top3_->horizontalHeader()->setStretchLastSection(true);
+  top3_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  top3_->setSelectionMode(QAbstractItemView::NoSelection);
+  root->addWidget(top3_);
 }
 
 void GeneralTab::updateSnapshot(const MetricsSnapshot& s) {
@@ -124,7 +135,6 @@ void GeneralTab::updateSnapshot(const MetricsSnapshot& s) {
   totalAllocs_->setText(QString("Total allocs: %1").arg(totalAllocs));
 
   // ----- Serie Memoria vs tiempo (MB) -----
-  // Preferimos usar uptimeMs si viene; si no, avanzamos a paso fijo (~0.25s)
   double nextX = (s.uptimeMs > 0) ? (s.uptimeMs / 1000.0) : (t_ + 0.25);
   if (nextX <= t_) nextX = t_ + 0.25;
   t_ = nextX;
@@ -132,46 +142,49 @@ void GeneralTab::updateSnapshot(const MetricsSnapshot& s) {
   const double memMB = s.heapCurrent / (1024.0 * 1024.0);
   memSeries_->append(t_, memMB);
 
-  // Mantener una ventana de ~120 puntos/segundos
+  // Ventana ~120 s
   const double WINDOW_S = 120.0;
   while (memSeries_->count() > 0 && memSeries_->at(0).x() < t_ - WINDOW_S) {
     memSeries_->removePoints(0, 1);
   }
 
-  // Ajustar ejes de memoria
-  auto* axX_mem = qobject_cast<QValueAxis*>(memChart_->chart()->axisX());
-  auto* axY_mem = qobject_cast<QValueAxis*>(memChart_->chart()->axisY());
-  if (axX_mem) axX_mem->setRange(qMax(0.0, t_ - WINDOW_S), t_);
-  if (axY_mem) {
-    double yMax = qMax(axY_mem->max(), qMax(1.0, memMB * 1.2));
-    axY_mem->setRange(0.0, yMax);
-  }
+  // Actualizar ejes usando punteros persistentes (sin buscar en el chart)
+  axX_mem_->setRange(std::max(0.0, t_ - WINDOW_S), t_);
+  axY_mem_->setRange(0.0, std::max(axY_mem_->max(), std::max(1.0, memMB * 1.2)));
 
   // ----- Series de allocs/s y frees/s -----
   allocSeries_->append(t_, s.allocRate);
   freeSeries_->append(t_, s.freeRate);
 
-  // Recorte ventana
-  while (allocSeries_->count() > 0 && allocSeries_->at(0).x() < t_ - WINDOW_S) {
+  while (allocSeries_->count() > 0 && allocSeries_->at(0).x() < t_ - WINDOW_S)
     allocSeries_->removePoints(0, 1);
-  }
-  while (freeSeries_->count() > 0 && freeSeries_->at(0).x() < t_ - WINDOW_S) {
+  while (freeSeries_->count() > 0 && freeSeries_->at(0).x() < t_ - WINDOW_S)
     freeSeries_->removePoints(0, 1);
-  }
 
   auto* axX1 = qobject_cast<QValueAxis*>(allocChart_->chart()->axisX());
   auto* axY1 = qobject_cast<QValueAxis*>(allocChart_->chart()->axisY());
-  if (axX1) axX1->setRange(qMax(0.0, t_ - WINDOW_S), t_);
-  if (axY1) {
-    double yMax = qMax(axY1->max(), qMax(1.0, s.allocRate * 1.3));
-    axY1->setRange(0.0, yMax);
-  }
+  if (axX1) axX1->setRange(std::max(0.0, t_ - WINDOW_S), t_);
+  if (axY1) axY1->setRange(0.0, std::max(axY1->max(), std::max(1.0, s.allocRate * 1.3)));
 
   auto* axX2 = qobject_cast<QValueAxis*>(freeChart_->chart()->axisX());
   auto* axY2 = qobject_cast<QValueAxis*>(freeChart_->chart()->axisY());
-  if (axX2) axX2->setRange(qMax(0.0, t_ - WINDOW_S), t_);
-  if (axY2) {
-    double yMax = qMax(axY2->max(), qMax(1.0, s.freeRate * 1.3));
-    axY2->setRange(0.0, yMax);
+  if (axX2) axX2->setRange(std::max(0.0, t_ - WINDOW_S), t_);
+  if (axY2) axY2->setRange(0.0, std::max(axY2->max(), std::max(1.0, s.freeRate * 1.3)));
+
+  // ----- Top-3 por archivo -----
+  struct R { QString file; int allocs; qint64 bytes; };
+  std::vector<R> rows; rows.reserve(s.perFile.size());
+  for (const auto& f : s.perFile) rows.push_back({f.file, f.allocs, f.netBytes});
+  std::sort(rows.begin(), rows.end(), [](const R& a, const R& b){
+    if (a.bytes != b.bytes) return a.bytes > b.bytes;
+    return a.allocs > b.allocs;
+  });
+  const int N = std::min<int>(3, (int)rows.size());
+  top3_->clearContents();
+  top3_->setRowCount(N);
+  for (int i=0;i<N;++i) {
+    top3_->setItem(i, 0, new QTableWidgetItem(rows[i].file));
+    top3_->setItem(i, 1, new QTableWidgetItem(QString::number(rows[i].allocs)));
+    top3_->setItem(i, 2, new QTableWidgetItem(bytesToHuman(rows[i].bytes)));
   }
 }

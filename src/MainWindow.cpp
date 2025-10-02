@@ -10,13 +10,13 @@
 #include "tabs/PerFileTab.h"
 #include "tabs/LeaksTab.h"
 #include "net/ServerWorker.h"
-#include "model/MetricsSnapshot.h"   // o "MetricsSnapshot.h" según tu árbol
+#include "model/MetricsSnapshot.h"
 
 #include <QMetaType>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // Pestañas
-    tabs_ = new QTabWidget(this);
+    tabs_    = new QTabWidget(this);
     general_ = new GeneralTab(this);
     map_     = new MapTab(this);
     perFile_ = new PerFileTab(this);
@@ -29,34 +29,27 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setCentralWidget(tabs_);
     statusBar()->showMessage("Listo");
 
-    // --- Registro de tipo para señales entre hilos ---
+    // Registro de tipo para señales entre hilos
     qRegisterMetaType<MetricsSnapshot>("MetricsSnapshot");
 
-    // --- Hilo + worker (sin padre) ---
+    // Hilo + worker (worker sin padre, para moveToThread)
     thread_ = new QThread(this);
-    worker_ = new ServerWorker();     // <-- SIN padre (clave para poder moveToThread)
+    worker_ = new ServerWorker();
     worker_->moveToThread(thread_);
 
-    // Arrancar escucha cuando el hilo esté listo (la lambda corre en el hilo del worker)
+    // Arrancar escucha en el hilo del worker
     connect(thread_, &QThread::started, worker_, [this]{
-        // LocalHost si solo vas a conectar desde la misma máquina.
-        // Usa QHostAddress::Any si quieres permitir conexiones remotas.
         worker_->listen(QHostAddress::LocalHost, 7070);
     });
 
-    // Estado a la barra de estado (ajusta el nombre de la señal a tu header)
-    // Si tu ServerWorker tiene 'statusChanged', deja esa línea; si usa 'status', cambia aquí:
-    // connect(worker_, &ServerWorker::status, this, &MainWindow::onStatus);
+    // Estado a la barra de estado
     connect(worker_, &ServerWorker::status, this, &MainWindow::onStatus);
 
-    // Snapshot -> actualiza todas las pestañas
+    // Snapshot -> actualizar pestañas
     connect(worker_, &ServerWorker::snapshotReady, this, &MainWindow::onSnapshot);
 
-    // Limpieza segura del worker cuando el hilo termine
+    // Limpieza segura
     connect(thread_, &QThread::finished, worker_, &QObject::deleteLater);
-
-    // No necesitamos llamar a worker_->stop() en destroyed; vamos a parar el hilo en el dtor
-    // connect(this, &QObject::destroyed, worker_, &ServerWorker::stop);
 
     thread_->start();
 }
@@ -69,7 +62,6 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::onSnapshot(const MetricsSnapshot& s) {
-    // Si prefieres, puedes mandar solo a General y luego ir habilitando el resto
     general_->updateSnapshot(s);
     map_->updateSnapshot(s);
     perFile_->updateSnapshot(s);
@@ -79,4 +71,3 @@ void MainWindow::onSnapshot(const MetricsSnapshot& s) {
 void MainWindow::onStatus(const QString& st) {
     statusBar()->showMessage(st, 3000);
 }
-

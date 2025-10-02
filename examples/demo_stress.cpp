@@ -20,12 +20,12 @@ static void sleep_ms(int ms) {
 
 int main() {
     std::puts("[demo_stress] start");
-    // Conéctate a la GUI (ServerWorker escucha por defecto en 7070, Any/localhost)
+    // Conéctate a la GUI (ServerWorker escucha por defecto en 7070)
     memprof_init("127.0.0.1", 7070);
 
     std::mt19937_64 rng{1234567};
     std::uniform_int_distribution<int> alloc_size(1 << 10, 1 << 16); // 1KB..64KB
-    std::bernoulli_distribution       leak_prob(0.15);               // 15% quedan sin liberar
+    std::bernoulli_distribution        leak_prob(0.15);              // 15% quedan sin liberar
     std::uniform_int_distribution<int> hold_ms(20, 200);             // tiempo de vida de bloques
 
     struct Block { char* p; size_t n; int ttl; };

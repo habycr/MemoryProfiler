@@ -127,14 +127,22 @@ void ServerWorker::parseSnapshotJson(const QJsonObject& o) {
     }
 
     MetricsSnapshot s{};
-    s.heapCurrent = static_cast<qulonglong>(g.value("heap_current").toDouble(0));
-    s.heapPeak    = static_cast<qulonglong>(g.value("heap_peak").toDouble(0));
-    s.allocRate   = g.value("alloc_rate").toDouble(0.0);
-    s.freeRate    = g.value("free_rate").toDouble(0.0);
-    s.uptimeMs    = static_cast<qulonglong>(g.value("uptime_ms").toDouble(0));
-    s.activeAllocs= static_cast<qulonglong>(g.value("active_allocs").toDouble(0));
-    s.totalAllocs = static_cast<qulonglong>(g.value("total_allocs").toDouble(0));
-    s.leakBytes   = static_cast<qulonglong>(g.value("leak_bytes").toDouble(0));
+    s.heapCurrent  = static_cast<qulonglong>(g.value("heap_current").toDouble(0));
+    s.heapPeak     = static_cast<qulonglong>(g.value("heap_peak").toDouble(0));
+    s.allocRate    = g.value("alloc_rate").toDouble(0.0);
+    s.freeRate     = g.value("free_rate").toDouble(0.0);
+    s.uptimeMs     = static_cast<qulonglong>(g.value("uptime_ms").toDouble(0));
+    s.activeAllocs = static_cast<qulonglong>(g.value("active_allocs").toDouble(0));
+    s.totalAllocs  = static_cast<qulonglong>(g.value("total_allocs").toDouble(0));
+    s.leakBytes    = static_cast<qulonglong>(g.value("leak_bytes").toDouble(0));
+
+    // KPIs de fugas (opcionales)
+    s.leakRate       = g.value("leak_rate").toDouble(0.0);
+    s.largestLeakSz  = static_cast<qulonglong>(g.value("largest_size").toDouble(0));
+    s.largestLeakFile= g.value("largest_file").toString();
+    s.topLeakFile    = g.value("top_file").toString();
+    s.topLeakCount   = g.value("top_file_count").toInt(0);
+    s.topLeakBytes   = static_cast<qulonglong>(g.value("top_file_bytes").toDouble(0));
 
     // 2) BINS
     s.bins.clear();
@@ -193,6 +201,8 @@ void ServerWorker::parseSnapshotJson(const QJsonObject& o) {
              << "active=" << s.activeAllocs
              << "total=" << s.totalAllocs
              << "leakB=" << s.leakBytes
+             << "alloc/s=" << s.allocRate
+             << "free/s=" << s.freeRate
              << "bins=" << s.bins.size()
              << "perFile=" << s.perFile.size()
              << "leaks=" << s.leaks.size();

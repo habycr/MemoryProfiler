@@ -1,61 +1,106 @@
 #include "TableModels.h"
-#include <QDateTime>
 #include <QString>
 
+// ==================== LeaksModel ====================
+LeaksModel::LeaksModel(QObject* parent) : QAbstractTableModel(parent) {}
 
-// --- PerFileModel ---
-PerFileModel::PerFileModel(QObject* p): QAbstractTableModel(p) {}
-int PerFileModel::rowCount(const QModelIndex&) const { return rows_.size(); }
-int PerFileModel::columnCount(const QModelIndex&) const { return NCols; }
-QVariant PerFileModel::headerData(int s, Qt::Orientation o, int r) const {
-if (r!=Qt::DisplayRole) return {};
-if (o==Qt::Horizontal) {
-switch (s){
-case File: return "Archivo"; case TotalBytes: return "Total [B]"; case Allocs: return "Allocs"; case Frees: return "Frees"; case NetBytes: return "Net [B]";
+int LeaksModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : rows_.size();
 }
-}
-return {};
-}
-QVariant PerFileModel::data(const QModelIndex& i, int role) const {
-if (!i.isValid() || i.row()<0 || i.row()>=rows_.size()) return {};
-const auto& r = rows_[i.row()];
-if (role==Qt::DisplayRole) {
-switch (i.column()){
-case File: return r.file; case TotalBytes: return (qlonglong)r.totalBytes; case Allocs: return r.allocs; case Frees: return r.frees; case NetBytes: return (qlonglong)r.netBytes;
-}
-}
-return {};
-}
-void PerFileModel::setDataSet(const QVector<FileStat>& v){ beginResetModel(); rows_ = v; endResetModel(); }
 
+int LeaksModel::columnCount(const QModelIndex& parent) const {
+    Q_UNUSED(parent);
+    return 6; // ptr, size, file, line, type, ts_ns
+}
 
-// --- LeaksModel ---
-LeaksModel::LeaksModel(QObject* p): QAbstractTableModel(p) {}
-int LeaksModel::rowCount(const QModelIndex&) const { return rows_.size(); }
-int LeaksModel::columnCount(const QModelIndex&) const { return NCols; }
-QVariant LeaksModel::headerData(int s, Qt::Orientation o, int r) const {
-if (r!=Qt::DisplayRole) return {};
-if (o==Qt::Horizontal) {
-switch (s){
-case Ptr: return "ptr"; case Size: return "size"; case File: return "file"; case Line: return "line"; case Type: return "type"; case TsNs: return "ts_ns";
+QVariant LeaksModel::headerData(int section, Qt::Orientation orientation, int role) const {
+    if (role != Qt::DisplayRole) return {};
+    if (orientation == Qt::Horizontal) {
+        switch (section) {
+            case 0: return "Ptr";
+            case 1: return "Size (B)";
+            case 2: return "File";
+            case 3: return "Line";
+            case 4: return "Type";
+            case 5: return "ts_ns";
+        }
+    }
+    return {};
 }
+
+QVariant LeaksModel::data(const QModelIndex& index, int role) const {
+    if (!index.isValid() || index.row() >= rows_.size()) return {};
+    const auto& it = rows_[index.row()];
+    if (role == Qt::DisplayRole) {
+        switch (index.column()) {
+            case 0: return QString("0x%1").arg(QString::number(it.ptr, 16));
+            case 1: return it.size;
+            case 2: return it.file;
+            case 3: return it.line;
+            case 4: return it.type;
+            case 5: return QString::number(it.ts_ns);
+        }
+    }
+    return {};
 }
-return {};
+
+void LeaksModel::setDataSet(const QVector<LeakItem>& v) {
+    beginResetModel();
+    rows_ = v;
+    endResetModel();
 }
-QVariant LeaksModel::data(const QModelIndex& i, int role) const {
-if (!i.isValid() || i.row()<0 || i.row()>=rows_.size()) return {};
-const auto& r = rows_[i.row()];
-if (role==Qt::DisplayRole) {
-switch (i.column()){
-case Ptr: return QString("0x%1").arg(QString::number(r.ptr,16));
-case Size: return (qlonglong)r.size;
-case File: return r.file;
-case Line: return r.line;
-case Type: return r.type;
-case TsNs: return (qlonglong)r.ts_ns;
+
+LeakItem LeaksModel::itemAt(int row) const {
+    return (row >= 0 && row < rows_.size()) ? rows_[row] : LeakItem{};
 }
+
+// ==================== PerFileModel ====================
+PerFileModel::PerFileModel(QObject* parent) : QAbstractTableModel(parent) {}
+
+int PerFileModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : rows_.size();
 }
-return {};
+
+int PerFileModel::columnCount(const QModelIndex& parent) const {
+    Q_UNUSED(parent);
+    return 5; // Archivo | Total [B] | Allocs | Frees | Net [B]
 }
-void LeaksModel::setDataSet(const QVector<LeakItem>& v){ beginResetModel(); rows_ = v; endResetModel(); }
-LeakItem LeaksModel::itemAt(int row) const { return (row>=0 && row<rows_.size()) ? rows_[row] : LeakItem{}; }
+
+QVariant PerFileModel::headerData(int section, Qt::Orientation orientation, int role) const {
+    if (role != Qt::DisplayRole) return {};
+    if (orientation == Qt::Horizontal) {
+        switch (section) {
+            case 0: return "Archivo";
+            case 1: return "Total [B]";
+            case 2: return "Allocs";
+            case 3: return "Frees";
+            case 4: return "Net [B]";
+        }
+    }
+    return {};
+}
+
+QVariant PerFileModel::data(const QModelIndex& index, int role) const {
+    if (!index.isValid() || index.row() >= rows_.size()) return {};
+    const auto& it = rows_[index.row()];
+    if (role == Qt::DisplayRole) {
+        switch (index.column()) {
+            case 0: return it.file;
+            case 1: return it.totalBytes;
+            case 2: return it.allocs;
+            case 3: return it.frees;
+            case 4: return it.netBytes;
+        }
+    }
+    return {};
+}
+
+void PerFileModel::setDataSet(const QVector<FileStat>& v) {
+    beginResetModel();
+    rows_ = v;
+    endResetModel();
+}
+
+const QVector<FileStat>& PerFileModel::items() const {
+    return rows_;
+}
