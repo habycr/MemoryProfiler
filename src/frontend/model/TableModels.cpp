@@ -46,7 +46,11 @@ QVariant LeaksModel::data(const QModelIndex& index, int role) const {
 
 void LeaksModel::setDataSet(const QVector<LeakItem>& v) {
     beginResetModel();
-    rows_ = v;
+    rows_.clear();
+    rows_.reserve(v.size());
+    for (const auto& it : v) {
+        if (it.isLeak) rows_.push_back(it); // <-- SOLO fugas reales
+    }
     endResetModel();
 }
 
@@ -63,7 +67,8 @@ int PerFileModel::rowCount(const QModelIndex& parent) const {
 
 int PerFileModel::columnCount(const QModelIndex& parent) const {
     Q_UNUSED(parent);
-    return 5; // Archivo | Total [B] | Allocs | Frees | Net [B]
+    // ↓↓↓ Solo 3 columnas: Archivo | Total [MB] | Allocs
+    return 3;
 }
 
 QVariant PerFileModel::headerData(int section, Qt::Orientation orientation, int role) const {
@@ -71,10 +76,8 @@ QVariant PerFileModel::headerData(int section, Qt::Orientation orientation, int 
     if (orientation == Qt::Horizontal) {
         switch (section) {
             case 0: return "Archivo";
-            case 1: return "Total [B]";
+            case 1: return "Total [MB]";
             case 2: return "Allocs";
-            case 3: return "Frees";
-            case 4: return "Net [B]";
         }
     }
     return {};
@@ -83,13 +86,35 @@ QVariant PerFileModel::headerData(int section, Qt::Orientation orientation, int 
 QVariant PerFileModel::data(const QModelIndex& index, int role) const {
     if (!index.isValid() || index.row() >= rows_.size()) return {};
     const auto& it = rows_[index.row()];
+
+    // Para ordenamiento correcto: devolver valores numéricos en UserRole
+    if (role == Qt::UserRole) {
+        switch (index.column()) {
+            case 1: { // Total [MB] numérico
+                const double mb = static_cast<double>(it.totalBytes) / (1024.0 * 1024.0);
+                return mb;
+            }
+            case 2: { // Allocs
+                return it.allocs;
+            }
+            default: break;
+        }
+    }
+
+    // Alineación de numéricos
+    if (role == Qt::TextAlignmentRole) {
+        if (index.column() == 1 || index.column() == 2)
+            return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
+    }
+
     if (role == Qt::DisplayRole) {
         switch (index.column()) {
             case 0: return it.file;
-            case 1: return it.totalBytes;
+            case 1: {
+                const double mb = static_cast<double>(it.totalBytes) / (1024.0 * 1024.0);
+                return QString::number(mb, 'f', 2);
+            }
             case 2: return it.allocs;
-            case 3: return it.frees;
-            case 4: return it.netBytes;
         }
     }
     return {};

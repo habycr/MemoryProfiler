@@ -1,7 +1,7 @@
 #pragma once
 #include <QAbstractTableModel>
 #include <QVector>
-#include "MetricsSnapshot.h"
+#include "memprof/proto/MetricsSnapshot.h"
 
 // -------------------- LeaksModel --------------------
 class LeaksModel : public QAbstractTableModel {
@@ -28,7 +28,7 @@ public:
     explicit PerFileModel(QObject* parent=nullptr);
 
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
-    int columnCount(const QModelIndex& parent = QModelIndex()) const override;
+    int columnCount(const QModelIndex& parent = QModelIndex()) const override; // Archivo | Total [MB] | Allocs
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
     QVariant data(const QModelIndex& index, int role) const override;
 

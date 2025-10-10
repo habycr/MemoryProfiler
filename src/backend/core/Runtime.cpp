@@ -11,8 +11,8 @@
 #include <cstdint>
 #include <cstddef>
 
-#include "MetricsAggregator.h"
-#include "TcpClient.h"
+#include "memprof/core/MetricsAggregator.h"
+#include "memprof/core/TcpClient.h"
 
 // ---------------- Estado global ----------------
 static std::atomic<bool> g_running{false};
@@ -198,18 +198,23 @@ int memprof_init(const char* host, int port) {
             }
             ss << "],";
 
-            // leaks (bloques vivos)
+            // leaks (bloques vivos) + is_leak decidido aquí
+            const uint64_t now = now_ns();
+            const uint64_t thr_ns = g_agg.getLeakThresholdMs() * 1000000ULL;
+
             ss << "\"leaks\":[";
             for (size_t i = 0; i < blocks.size(); ++i) {
                 if (i) ss << ',';
                 const auto& b = blocks[i];
+                const bool is_leak = (now > b.ts_ns) && ((now - b.ts_ns) > thr_ns);
                 ss << '{'
-                   << "\"ptr\":\""  << b.ptr  << "\","
-                   << "\"size\":"   << b.size << ','
-                   << "\"file\":\"" << b.file << "\","
-                   << "\"line\":"   << b.line << ','
-                   << "\"type\":\"" << b.type << "\","
-                   << "\"ts_ns\":"  << b.ts_ns
+                   << "\"ptr\":\""   << b.ptr  << "\","
+                   << "\"size\":"    << b.size << ','
+                   << "\"file\":\""  << b.file << "\","
+                   << "\"line\":"    << b.line << ','
+                   << "\"type\":\""  << b.type << "\","
+                   << "\"ts_ns\":"   << b.ts_ns << ','
+                   << "\"is_leak\":" << (is_leak ? "true" : "false")
                    << '}';
             }
             ss << "],";

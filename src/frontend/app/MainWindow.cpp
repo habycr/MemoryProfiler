@@ -5,12 +5,12 @@
 #include <QThread>
 #include <QHostAddress>
 
-#include "tabs/GeneralTab.h"
-#include "tabs/MapTab.h"
-#include "tabs/PerFileTab.h"
-#include "tabs/LeaksTab.h"
-#include "net/ServerWorker.h"
-#include "model/MetricsSnapshot.h"
+#include "../../frontend/tabs/GeneralTab.h"
+#include "../../frontend/tabs/MapTab.h"
+#include "../../frontend/tabs/PerFileTab.h"
+#include "../../frontend/tabs/LeaksTab.h"
+#include "../../frontend/net/ServerWorker.h"
+#include "../../../include/memprof/proto/MetricsSnapshot.h"
 
 #include <QMetaType>
 

@@ -4,7 +4,7 @@
 #include <chrono>
 #include <thread>
 #include <atomic>
-#include "memprof_api.h"
+#include "../include/memprof/core/Runtime.h"
 // Pequeñas: 16..512 bytes, alta tasa de asignación/liberación.
 void worker_small_churn(std::atomic<bool>& stop) {
     std::mt19937 rng{12345};

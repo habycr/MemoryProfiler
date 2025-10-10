@@ -13,8 +13,8 @@
   QT_CHARTS_USE_NAMESPACE
 #endif
 
-#include "model/TableModels.h"
-#include "model/MetricsSnapshot.h"
+#include "../../frontend/model/TableModels.h"
+#include "../../../include/memprof/proto/MetricsSnapshot.h"
 
 class QTableView; class QLineEdit; class QPushButton; class QLabel;
 

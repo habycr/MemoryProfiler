@@ -8,22 +8,88 @@
 #include <QClipboard>
 #include <QApplication>
 #include <QLabel>
-#include <QDateTime>
 #include <QValueAxis>
 #include <QFileInfo>
 #include <QDir>
 #include <QUrl>
 #include <QRegularExpression>
 
+namespace {
+// Helper: convierte bytes → kB con 2 decimales y devuelve solo el número (sin sufijo)
+static inline QString bytesToKB(qint64 bytes) {
+    const double kb = bytes / 1024.0;
+    return QString::number(kb, 'f', 2);
+}
+
+// Helper: intenta obtener un basename legible desde rutas, percent-encoding o cadenas “aplanadas”
+static inline QString niceBaseName(const QString& raw) {
+    // 1) Decodifica percent-encoding
+    QString dec = QUrl::fromPercentEncoding(raw.toUtf8());
+
+    // 2) Normaliza separadores
+    QString norm = dec;
+    norm.replace("\\", "/");
+    norm.replace("%2F", "/");
+    norm.replace("%5C", "/");
+
+    // 3) Prueba basename directo
+    QString base = QFileInfo(norm).fileName();
+    auto looksLikeFile = [](const QString& s) {
+        return !s.isEmpty() && s.contains('.');
+    };
+    if (looksLikeFile(base)) return base;
+
+    // 4) Recuperación best-effort si vino “aplanado” sin separadores
+    static const QStringList exts = {"cpp","cxx","cc","c","hpp","hh","h"};
+    int bestPos = -1;
+    QString bestExt;
+    bool bestHadDot = false;
+
+    for (const auto& ext : exts) {
+        const QString dotExt = "." + ext;
+
+        int pDot = norm.lastIndexOf(dotExt, -1, Qt::CaseInsensitive);
+        if (pDot >= 0 && pDot > bestPos) {
+            bestPos = pDot; bestExt = ext; bestHadDot = true;
+        }
+        int pPlain = norm.lastIndexOf(ext, -1, Qt::CaseInsensitive);
+        if (pPlain >= 0 && pPlain > bestPos) {
+            bestPos = pPlain; bestExt = ext; bestHadDot = false;
+        }
+    }
+
+    if (bestPos >= 0) {
+        int end = bestPos + (bestHadDot ? 1 : 0) + bestExt.size();
+        int start = bestPos - 1;
+        auto okCh = [](QChar ch) {
+            return ch.isLetterOrNumber() || ch == '_' || ch == '-' || ch == '.';
+        };
+        while (start >= 0 && okCh(norm[start])) --start;
+        ++start;
+
+        QString name = norm.mid(start, end - start);
+        if (!bestHadDot && name.size() > bestExt.size()
+            && name.right(bestExt.size()) == bestExt) {
+            name.insert(name.size() - bestExt.size(), ".");
+        }
+        if (looksLikeFile(name)) return name;
+    }
+
+    // 5) Último recurso: devuelve una versión acortada
+    if (norm.size() > 40) return norm.left(20) + "…" + norm.right(15);
+    return norm;
+}
+} // namespace
+
 LeaksTab::LeaksTab(QWidget* parent): QWidget(parent) {
     auto* root = new QVBoxLayout(this);
 
     // --- Resumen KPIs ---
     auto* kpiRow = new QHBoxLayout();
-    leakTotalLbl_ = new QLabel("Total fugado: 0 MB");
+    leakTotalLbl_ = new QLabel("Total fugado: 0.00 kB");
     largestLbl_   = new QLabel("Leak mayor: —");
-    topFileLbl_   = new QLabel("Archivo top: —");
-    leakRateLbl_  = new QLabel("Leak rate: 0.0%");
+    topFileLbl_   = new QLabel("Archivo con mayor frecuencia de leaks: —");
+    leakRateLbl_  = new QLabel("Tasa de leaks: 0.00%");
     kpiRow->addWidget(leakTotalLbl_);
     kpiRow->addWidget(largestLbl_);
     kpiRow->addWidget(topFileLbl_);
@@ -70,37 +136,44 @@ LeaksTab::LeaksTab(QWidget* parent): QWidget(parent) {
 }
 
 void LeaksTab::updateSnapshot(const MetricsSnapshot& s) {
+    // El modelo interno ya filtrará solo isLeak==true (ver TableModels.cpp)
     model_->setDataSet(s.leaks);
 
-    // ----- Preferir KPIs del snapshot (runtime); fallback si no vienen -----
-    double leak_mb = s.leakBytes / (1024.0*1024.0);
-    leakTotalLbl_->setText(QString("Total fugado: %1 MB").arg(leak_mb, 0, 'f', 2));
+    // ----- KPIs con preferencia a los del snapshot; fallback local coherente -----
 
+    // Total fugado (kB)
+    leakTotalLbl_->setText(QString("Total fugado: %1 kB").arg(bytesToKB(s.leakBytes)));
+
+    // Leak mayor (basename + tamaño en kB)
     if (s.largestLeakSz > 0) {
-        largestLbl_->setText(QString("Leak mayor: %1 (%2 B)").arg(s.largestLeakFile).arg(s.largestLeakSz));
+        const QString base = s.largestLeakFile.isEmpty() ? "—" : niceBaseName(s.largestLeakFile);
+        largestLbl_->setText(QString("Leak mayor: %1 (%2 kB)")
+                             .arg(base)
+                             .arg(bytesToKB(static_cast<qint64>(s.largestLeakSz))));
     } else {
-        // fallback (cálculo local)
+        // fallback local: buscar mayor entre los que son leak
         qint64 max_sz = 0; QString max_file = "—";
-        const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
         for (const auto& L : s.leaks) {
-            const qint64 age_ms = now_ms - (qint64)(L.ts_ns / 1000000ULL);
-            if (age_ms >= 3000 && L.size > max_sz) { max_sz = L.size; max_file = L.file; }
+            if (!L.isLeak) continue;
+            if (L.size > max_sz) { max_sz = L.size; max_file = L.file; }
         }
-        largestLbl_->setText(QString("Leak mayor: %1 (%2 B)").arg(max_file).arg(max_sz));
+        largestLbl_->setText(QString("Leak mayor: %1 (%2 kB)")
+                             .arg(niceBaseName(max_file))
+                             .arg(bytesToKB(max_sz)));
     }
 
+    // Archivo con mayor frecuencia de leaks (basename + conteo + total kB)
     if (!s.topLeakFile.isEmpty()) {
-        topFileLbl_->setText(QString("Archivo top: %1 (%2 leaks, %3 B)")
-                             .arg(s.topLeakFile).arg(s.topLeakCount).arg(s.topLeakBytes));
+        topFileLbl_->setText(QString("Archivo con mayor frecuencia de leaks: %1 (%2 leaks, %3 kB)")
+                             .arg(niceBaseName(s.topLeakFile))
+                             .arg(s.topLeakCount)
+                             .arg(bytesToKB(static_cast<qint64>(s.topLeakBytes))));
     } else {
-        // fallback local por frecuencia
-        QHash<QString, QPair<qint64,int>> byFile;
-        const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+        // fallback local por frecuencia (solo fugas)
+        QHash<QString, QPair<qint64,int>> byFile; // bytes, count
         for (const auto& L : s.leaks) {
-            const qint64 age_ms = now_ms - (qint64)(L.ts_ns / 1000000ULL);
-            if (age_ms >= 3000) {
-                auto& ref = byFile[L.file]; ref.first += L.size; ref.second += 1;
-            }
+            if (!L.isLeak) continue;
+            auto& ref = byFile[L.file]; ref.first += L.size; ref.second += 1;
         }
         QString topf="—"; int cnt=0; qint64 bytes=0;
         for (auto it = byFile.begin(); it != byFile.end(); ++it) {
@@ -108,110 +181,66 @@ void LeaksTab::updateSnapshot(const MetricsSnapshot& s) {
                 topf = it.key(); cnt = it.value().second; bytes = it.value().first;
             }
         }
-        topFileLbl_->setText(QString("Archivo top: %1 (%2 leaks, %3 B)").arg(topf).arg(cnt).arg(bytes));
+        topFileLbl_->setText(QString("Archivo con mayor frecuencia de leaks: %1 (%2 leaks, %3 kB)")
+                             .arg(niceBaseName(topf))
+                             .arg(cnt)
+                             .arg(bytesToKB(bytes)));
     }
 
-    const double rate = (s.leakRate > 0.0) ? (100.0 * s.leakRate) : 0.0;
-    leakRateLbl_->setText(QString("Leak rate: %1%").arg(rate, 0, 'f', 2));
+    // Tasa de leaks (%)
+    const double ratePct = (s.leakRate > 0.0) ? (100.0 * s.leakRate) : 0.0;
+    leakRateLbl_->setText(QString("Tasa de leaks: %1%").arg(ratePct, 0, 'f', 2));
 
-    // ----- Gráficas -----
+    // ----- Gráficas (las dejamos para la siguiente iteración) -----
     rebuildCharts(s);
 }
 
 void LeaksTab::rebuildCharts(const MetricsSnapshot& s) {
-    const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
-    const qint64 THR_MS = 3000;
-
+    // (sin cambios por ahora; lo ajustaremos en el siguiente paso si hace falta)
     // --- Helper: obtener una "clave" legible y consistente por archivo ---
-        // --- Helper: obtener una "clave" legible y consistente por archivo ---
     auto toNiceFileKey = [](const QString& raw) -> QString {
-        // 1) Decodificar percent-encoding
         QString dec = QUrl::fromPercentEncoding(raw.toUtf8());
-
-        // 2) Normalizar separadores
         QString norm = dec;
         norm.replace("\\", "/");
         norm.replace("%2F", "/");
         norm.replace("%5C", "/");
-
-        // 3) Intentar basename convencional
         QString base = QFileInfo(norm).fileName();
-        auto isGood = [](const QString& s) {
-            return !s.isEmpty() && s.contains('.');
-        };
+        auto isGood = [](const QString& s) { return !s.isEmpty() && s.contains('.'); };
         if (isGood(base)) return base;
 
-        // 4) Recuperar basename desde una cadena "aplanada"
-        //    (sin separadores) buscando la extensión al final.
         static const QStringList exts = {"cpp","cxx","cc","c","hpp","hh","h"};
-        int bestPos = -1;
-        QString bestExt;
-        bool bestHadDot = false;
-
+        int bestPos = -1; QString bestExt; bool bestHadDot = false;
         for (const auto& ext : exts) {
             const QString dotExt = "." + ext;
-
-            int pDot = norm.lastIndexOf(dotExt, -1, Qt::CaseInsensitive); // "...alloc_a.cpp"
-            if (pDot >= 0 && pDot > bestPos) {
-                bestPos = pDot;
-                bestExt = ext;
-                bestHadDot = true;
-            }
-            int pPlain = norm.lastIndexOf(ext, -1, Qt::CaseInsensitive);  // "...alloc_acpp" (aplanado)
-            if (pPlain >= 0 && pPlain > bestPos) {
-                bestPos = pPlain;
-                bestExt = ext;
-                bestHadDot = false;
-            }
+            int pDot = norm.lastIndexOf(dotExt, -1, Qt::CaseInsensitive);
+            if (pDot >= 0 && pDot > bestPos) { bestPos = pDot; bestExt = ext; bestHadDot = true; }
+            int pPlain = norm.lastIndexOf(ext, -1, Qt::CaseInsensitive);
+            if (pPlain >= 0 && pPlain > bestPos) { bestPos = pPlain; bestExt = ext; bestHadDot = false; }
         }
-
         if (bestPos >= 0) {
-            // end: posición tras la extensión
             int end = bestPos + (bestHadDot ? 1 : 0) + bestExt.size();
-
-            // start: retroceder hasta el primer no [A-Za-z0-9._-]
             int start = bestPos - 1;
-            auto isOkCh = [](QChar ch) {
-                return ch.isLetterOrNumber() || ch == '_' || ch == '-' || ch == '.';
-            };
-            while (start >= 0 && isOkCh(norm[start])) --start;
+            auto okCh = [](QChar ch) { return ch.isLetterOrNumber() || ch == '_' || ch == '-' || ch == '.'; };
+            while (start >= 0 && okCh(norm[start])) --start;
             ++start;
-
             QString name = norm.mid(start, end - start);
-
-            // Si venía sin punto antes de la extensión, insértalo para mostrarse bien.
             if (!bestHadDot && name.size() > bestExt.size()
                 && name.right(bestExt.size()) == bestExt) {
                 name.insert(name.size() - bestExt.size(), ".");
             }
-
             if (isGood(name)) return name;
         }
-
-        // 5) Último recurso: devolver una versión acortada para que no rompa la UI
         if (norm.size() > 40) return norm.left(20) + "…" + norm.right(15);
         return norm;
     };
 
-    // --- Agrupar por archivo (basename) solo para fugas "confirmadas" (edad >= THR_MS) ---
+    // --------- 1) Barras por archivo (bytes de fugas) ---------
     QHash<QString, qint64> bytesByKey;
-    qint64 tmin_detect = LLONG_MAX, tmax_detect = 0;
-
     for (const auto& L : s.leaks) {
-        const qint64 ts_ms = static_cast<qint64>(L.ts_ns / 1000000ULL);
-        if (now_ms - ts_ms >= THR_MS) {
-            const QString key = toNiceFileKey(L.file);
-            bytesByKey[key] += L.size;
-
-            const qint64 det_ms = ts_ms + THR_MS;
-            if (det_ms < tmin_detect) tmin_detect = det_ms;
-            if (det_ms > tmax_detect) tmax_detect = det_ms;
-        }
+        if (!L.isLeak) continue;
+        bytesByKey[toNiceFileKey(L.file)] += L.size;
     }
-    if (tmin_detect == LLONG_MAX) tmin_detect = now_ms;
-    if (tmax_detect < tmin_detect) tmax_detect = tmin_detect + 1;
 
-    // --- Ordenar por bytes y construir Top-N + "Otros" ---
     QList<QPair<QString, qint64>> items;
     items.reserve(bytesByKey.size());
     for (auto it = bytesByKey.begin(); it != bytesByKey.end(); ++it) {
@@ -240,7 +269,6 @@ void LeaksTab::rebuildCharts(const MetricsSnapshot& s) {
         *set << static_cast<double>(othersBytes);
     }
 
-    // --- Barras por archivo (bytes) ---
     auto* barChart = new QChart();
     barChart->setTitle("Leaks por archivo (bytes)");
     auto* series = new QBarSeries();
@@ -259,7 +287,7 @@ void LeaksTab::rebuildCharts(const MetricsSnapshot& s) {
     barChart->legend()->hide();
     barsView_->setChart(barChart);
 
-    // --- Pie distribución por archivo (%) ---
+    // --------- 2) Pie distribución por archivo (%) ---------
     auto* pieChart = new QChart();
     pieChart->setTitle("Distribución de leaks (%)");
     auto* pie = new QPieSeries();
@@ -277,7 +305,6 @@ void LeaksTab::rebuildCharts(const MetricsSnapshot& s) {
     pieChart->addSeries(pie);
     pieChart->legend()->setVisible(true);
 
-    // Etiquetas con porcentaje
     for (auto* slice : pie->slices()) {
         slice->setLabel(QString("%1 (%2%)")
                             .arg(slice->label())
@@ -285,23 +312,36 @@ void LeaksTab::rebuildCharts(const MetricsSnapshot& s) {
     }
     pieView_->setChart(pieChart);
 
-    // --- Temporal de detección (igual) ---
+    // --------- 3) Temporal: usar ts_ns relativo entre fugas ---------
+    QVector<QPair<double,double>> timePoints; // (x=time[s], y=size[B])
+    qulonglong tmin_ns = std::numeric_limits<qulonglong>::max();
+    qulonglong tmax_ns = 0;
+
+    for (const auto& L : s.leaks) {
+        if (!L.isLeak) continue;
+        if (L.ts_ns < tmin_ns) tmin_ns = L.ts_ns;
+        if (L.ts_ns > tmax_ns) tmax_ns = L.ts_ns;
+    }
+    if (tmin_ns == std::numeric_limits<qulonglong>::max()) {
+        tmin_ns = 0; tmax_ns = 0;
+    }
+    if (tmax_ns < tmin_ns) tmax_ns = tmin_ns + 1;
+
     auto* timeChart = new QChart();
-    timeChart->setTitle("Temporal de detección de leaks");
+    timeChart->setTitle("Temporal de asignaciones con fuga");
     auto* scat = new QScatterSeries();
     scat->setMarkerSize(6.0);
 
     for (const auto& L : s.leaks) {
-        const qint64 ts_ms = static_cast<qint64>(L.ts_ns / 1000000ULL);
-        if (now_ms - ts_ms >= THR_MS) {
-            const double x = double(ts_ms + THR_MS - tmin_detect) / 1000.0;
-            scat->append(x, static_cast<double>(L.size));
-        }
+        if (!L.isLeak) continue;
+        const double x = (tmin_ns == 0) ? 0.0
+                                        : double(L.ts_ns - tmin_ns) / 1e9; // segundos desde tmin
+        scat->append(x, static_cast<double>(L.size));
     }
 
     timeChart->addSeries(scat);
     auto* axX = new QValueAxis(); axX->setTitleText("t (s)");
-    axX->setRange(0.0, std::max(1.0, double(tmax_detect - tmin_detect) / 1000.0));
+    axX->setRange(0.0, std::max(1.0, double(tmax_ns - tmin_ns) / 1e9));
     auto* axY = new QValueAxis(); axY->setTitleText("Tamaño (B)");
     timeChart->addAxis(axX, Qt::AlignBottom);
     timeChart->addAxis(axY, Qt::AlignLeft);
@@ -310,8 +350,6 @@ void LeaksTab::rebuildCharts(const MetricsSnapshot& s) {
     timeChart->legend()->hide();
     timeView_->setChart(timeChart);
 }
-
-
 
 void LeaksTab::onCopySelected() {
     auto idx = table_->currentIndex(); if (!idx.isValid()) return;

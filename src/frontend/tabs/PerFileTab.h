@@ -1,11 +1,10 @@
 #pragma once
 #include <QWidget>
 #include <QSortFilterProxyModel>
-#include "model/TableModels.h"
-#include "model/MetricsSnapshot.h"
+#include "frontend/model/TableModels.h"
+#include "memprof/proto/MetricsSnapshot.h"
 
 class QTableView;
-class QLineEdit;
 class QLabel;
 
 class PerFileTab : public QWidget {
@@ -18,6 +17,5 @@ private:
     PerFileModel* model_ = nullptr;
     QSortFilterProxyModel* proxy_ = nullptr;
     QTableView* table_ = nullptr;
-    QLineEdit* filterEdit_ = nullptr;
     QLabel* totalRows_ = nullptr;
 };

@@ -1,5 +1,5 @@
 // src/net/ServerWorker.cpp
-#include "net/ServerWorker.h"
+#include "frontend/net/ServerWorker.h"
 
 #include <QJsonDocument>
 #include <QJsonValue>
@@ -187,11 +187,12 @@ void ServerWorker::parseSnapshotJson(const QJsonObject& o) {
         } else if (jp.isDouble()) {
             li.ptr = static_cast<qulonglong>(jp.toDouble(0));
         }
-        li.size  = static_cast<qlonglong>(L.value("size").toDouble(0));
-        li.file  = L.value("file").toString();
-        li.line  = L.value("line").toInt(0);
-        li.type  = L.value("type").toString();
-        li.ts_ns = static_cast<qulonglong>(L.value("ts_ns").toDouble(0));
+        li.size   = static_cast<qlonglong>(L.value("size").toDouble(0));
+        li.file   = L.value("file").toString();
+        li.line   = L.value("line").toInt(0);
+        li.type   = L.value("type").toString();
+        li.ts_ns  = static_cast<qulonglong>(L.value("ts_ns").toDouble(0));
+        li.isLeak = L.value("is_leak").toBool(false); // ← NUEVO
         s.leaks.push_back(li);
     }
 

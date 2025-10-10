@@ -4,7 +4,7 @@
 #include <chrono>
 #include <thread>
 #include <atomic>
-#include "memprof_api.h"
+#include "../include/memprof/core/Runtime.h"
 void worker_large_spikes(std::atomic<bool>& stop) {
     using namespace std::chrono_literals;
     std::mt19937 rng{13579};

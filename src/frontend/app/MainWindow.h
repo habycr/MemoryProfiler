@@ -1,7 +1,7 @@
 #pragma once
 #include <QMainWindow>
 #include <QString>
-#include "model/MetricsSnapshot.h"
+#include "../../../include/memprof/proto/MetricsSnapshot.h"
 
 class QTabWidget;
 class QThread;

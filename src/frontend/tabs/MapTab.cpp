@@ -19,9 +19,6 @@ class BlocksModel : public QAbstractTableModel {
 public:
     explicit BlocksModel(QObject* p=nullptr) : QAbstractTableModel(p) {}
 
-    // Permite cambiar el umbral en ms para marcar LEAK
-    void setLeakThresholdMs(qulonglong ms) { leakThresholdMs_ = ms; }
-
     void setDataSet(const QVector<LeakItem>& v) {
         beginResetModel();
         rows_ = v;
@@ -55,14 +52,7 @@ public:
     QVariant data(const QModelIndex& i, int role) const override {
         if (!i.isValid() || i.row() >= rows_.size()) return {};
         const auto& L = rows_[i.row()];
-
-        // Edad (ms) y estado LEAK (según umbral configurable)
-        const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
-        const qint64 alloc_ms = static_cast<qint64>(L.ts_ns / 1000000ULL);
-        const qint64 age_ms = now_ms - alloc_ms;
-        const bool isLeak = (leakThresholdMs_ > 0)
-            ? (age_ms >= static_cast<qint64>(leakThresholdMs_))
-            : false;
+        const bool isLeak = L.isLeak; // ← directo del runtime
 
         // Valor crudo para ordenar correctamente por puntero (numérico)
         if (role == Qt::UserRole && i.column() == 0) {
@@ -86,7 +76,7 @@ public:
                 case 1: return L.size;
                 case 2: return L.file;
                 case 3: return L.line;
-                case 4: return L.type;               // suele ser "global_new" hoy
+                case 4: return L.type;               // p.ej., "global_new"
                 case 5: return isLeak ? "LEAK" : "Activo";
             }
         }
@@ -95,7 +85,6 @@ public:
 
 private:
     QVector<LeakItem> rows_;
-    qulonglong leakThresholdMs_ = 10000; // 10 s por defecto
 };
 
 class MapBinsCanvas : public QWidget {
@@ -171,8 +160,6 @@ MapTab::MapTab(QWidget* parent): QWidget(parent) {
 
     // Modelo crudo + proxy para ordenar por puntero numérico (UserRole)
     auto* rawModel = new BlocksModel(this);
-    // Umbral por defecto (10 s) para evitar que "todo sea LEAK" muy rápido.
-    rawModel->setLeakThresholdMs(10000);
 
     auto* proxy = new QSortFilterProxyModel(this);
     proxy->setSourceModel(rawModel);

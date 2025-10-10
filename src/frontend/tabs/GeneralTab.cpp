@@ -1,5 +1,5 @@
 #include "GeneralTab.h"
-#include "model/MetricsSnapshot.h"
+#include "../../../include/memprof/proto/MetricsSnapshot.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
