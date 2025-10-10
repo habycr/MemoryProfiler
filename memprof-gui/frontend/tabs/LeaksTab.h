@@ -14,7 +14,7 @@
 #endif
 
 #include "../../frontend/model/TableModels.h"
-#include "../../../include/memprof/proto/MetricsSnapshot.h"
+#include "../include/memprof/proto/MetricsSnapshot.h"
 
 class QTableView; class QLineEdit; class QPushButton; class QLabel;
 

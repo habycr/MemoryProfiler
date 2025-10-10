@@ -10,7 +10,7 @@
 #include "../../frontend/tabs/PerFileTab.h"
 #include "../../frontend/tabs/LeaksTab.h"
 #include "../../frontend/net/ServerWorker.h"
-#include "../../../include/memprof/proto/MetricsSnapshot.h"
+#include "../include/memprof/proto/MetricsSnapshot.h"
 
 #include <QMetaType>
 

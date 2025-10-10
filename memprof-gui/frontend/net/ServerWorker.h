@@ -7,7 +7,7 @@
 #include <QJsonObject>
 #include <QString>
 
-#include "../../../include/memprof/proto/MetricsSnapshot.h"
+#include "../include/memprof/proto/MetricsSnapshot.h"
 
 class ServerWorker : public QObject {
     Q_OBJECT
