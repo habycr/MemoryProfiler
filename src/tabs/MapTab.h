@@ -10,7 +10,7 @@ class MapTab : public QWidget {
 public:
     explicit MapTab(QWidget* parent=nullptr);
     void updateSnapshot(const MetricsSnapshot& s);
-
+    void setLeakThresholdMs(qulonglong ms) { leakThresholdMs_ = ms; } // nuevo
 private:
     // Canvas de bins (widget hijo que pinta)
     QWidget* binsCanvas_ = nullptr;
@@ -24,4 +24,8 @@ private:
 
     // Re-render del canvas
     void repaintCanvas();
+
+
+ // Umbral para marcar LEAK por antigüedad (configurable)
+    qulonglong leakThresholdMs_ = 10000; // 10 s por defecto
 };

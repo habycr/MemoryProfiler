@@ -29,12 +29,6 @@ private:
     QLabel* leakMb_        = nullptr;
     QLabel* totalAllocs_   = nullptr;
 
-    // --- Charts: allocs/s y frees/s (se mantienen como en tu versión) ---
-    QChartView*  allocChart_   = nullptr;
-    QLineSeries* allocSeries_  = nullptr;
-
-    QChartView*  freeChart_    = nullptr;
-    QLineSeries* freeSeries_   = nullptr;
 
     // --- Memoria vs tiempo (MB) — corregido para evitar doble trazo ---
     QChartView*  memChartView_ = nullptr;   // vista

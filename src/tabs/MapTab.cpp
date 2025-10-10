@@ -11,13 +11,16 @@
 #include <QSortFilterProxyModel>
 #include <algorithm>
 
-// ---- Modelo interno para bloques (Ptr, Size, File, Line, Type, Edad(ms), Estado) ----
+// ---- Modelo interno para bloques (Ptr, Size, File, Line, Type, Estado) ----
 #include <QAbstractTableModel>
 
 class BlocksModel : public QAbstractTableModel {
     Q_OBJECT
 public:
     explicit BlocksModel(QObject* p=nullptr) : QAbstractTableModel(p) {}
+
+    // Permite cambiar el umbral en ms para marcar LEAK
+    void setLeakThresholdMs(qulonglong ms) { leakThresholdMs_ = ms; }
 
     void setDataSet(const QVector<LeakItem>& v) {
         beginResetModel();
@@ -31,7 +34,7 @@ public:
 
     int columnCount(const QModelIndex& parent = {}) const override {
         Q_UNUSED(parent);
-        return 7;
+        return 6; // Ptr, Size, File, Line, Type, Estado
     }
 
     QVariant headerData(int s, Qt::Orientation o, int role) const override {
@@ -42,9 +45,8 @@ public:
                 case 1: return "Size (B)";
                 case 2: return "File";
                 case 3: return "Line";
-                case 4: return "Type";       // <--- NUEVO
-                case 5: return "Edad (ms)";
-                case 6: return "Estado";
+                case 4: return "Type";
+                case 5: return "Estado";
             }
         }
         return {};
@@ -53,9 +55,14 @@ public:
     QVariant data(const QModelIndex& i, int role) const override {
         if (!i.isValid() || i.row() >= rows_.size()) return {};
         const auto& L = rows_[i.row()];
+
+        // Edad (ms) y estado LEAK (según umbral configurable)
         const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
-        const qint64 age_ms = now_ms - static_cast<qint64>(L.ts_ns / 1000000ULL);
-        const bool isLeak = (age_ms >= 3000);
+        const qint64 alloc_ms = static_cast<qint64>(L.ts_ns / 1000000ULL);
+        const qint64 age_ms = now_ms - alloc_ms;
+        const bool isLeak = (leakThresholdMs_ > 0)
+            ? (age_ms >= static_cast<qint64>(leakThresholdMs_))
+            : false;
 
         // Valor crudo para ordenar correctamente por puntero (numérico)
         if (role == Qt::UserRole && i.column() == 0) {
@@ -64,7 +71,7 @@ public:
 
         if (role == Qt::TextAlignmentRole) {
             // Alinea numéricos a la derecha para lectura
-            if (i.column() == 1 || i.column() == 3 || i.column() == 5) {
+            if (i.column() == 1 || i.column() == 3) {
                 return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
             }
         }
@@ -79,9 +86,8 @@ public:
                 case 1: return L.size;
                 case 2: return L.file;
                 case 3: return L.line;
-                case 4: return L.type;          // <--- NUEVO
-                case 5: return age_ms;
-                case 6: return isLeak ? "LEAK" : "Activo";
+                case 4: return L.type;               // suele ser "global_new" hoy
+                case 5: return isLeak ? "LEAK" : "Activo";
             }
         }
         return {};
@@ -89,6 +95,7 @@ public:
 
 private:
     QVector<LeakItem> rows_;
+    qulonglong leakThresholdMs_ = 10000; // 10 s por defecto
 };
 
 class MapBinsCanvas : public QWidget {
@@ -140,7 +147,11 @@ protected:
         .arg(QString("0x%1").arg(QString::number(b.hi,16)))
         .arg(static_cast<qlonglong>(b.bytes))
         .arg(b.allocations);
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
         QToolTip::showText(e->globalPosition().toPoint(), txt, this);
+#else
+        QToolTip::showText(e->globalPos(), txt, this);
+#endif
     }
 
 private:
@@ -160,6 +171,9 @@ MapTab::MapTab(QWidget* parent): QWidget(parent) {
 
     // Modelo crudo + proxy para ordenar por puntero numérico (UserRole)
     auto* rawModel = new BlocksModel(this);
+    // Umbral por defecto (10 s) para evitar que "todo sea LEAK" muy rápido.
+    rawModel->setLeakThresholdMs(10000);
+
     auto* proxy = new QSortFilterProxyModel(this);
     proxy->setSourceModel(rawModel);
     proxy->setSortRole(Qt::UserRole);

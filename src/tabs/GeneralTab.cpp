@@ -68,33 +68,7 @@ GeneralTab::GeneralTab(QWidget* parent) : QWidget(parent) {
   memChartView_->setRenderHint(QPainter::Antialiasing);
   root->addWidget(memChartView_);
 
-  // ================= Chart de allocs/s =================
-  allocSeries_ = new QLineSeries();
-  // allocSeries_->setUseOpenGL(true); // opcional; si ves “doble línea”, déjalo OFF
-  auto* allocChart = new QChart();
-  allocChart->legend()->hide();
-  allocChart->addSeries(allocSeries_);
-  auto* axX1 = new QValueAxis(); axX1->setTitleText("t (s)"); axX1->setRange(0.0, 60.0);
-  auto* axY1 = new QValueAxis(); axY1->setTitleText("allocs/s"); axY1->setRange(0.0, 1.0);
-  allocChart->addAxis(axX1, Qt::AlignBottom); allocChart->addAxis(axY1, Qt::AlignLeft);
-  allocSeries_->attachAxis(axX1); allocSeries_->attachAxis(axY1);
-  allocChart_ = new QChartView(allocChart);
-  allocChart_->setRenderHint(QPainter::Antialiasing);
-  root->addWidget(allocChart_);
 
-  // ================= Chart de frees/s =================
-  freeSeries_ = new QLineSeries();
-  // freeSeries_->setUseOpenGL(true); // opcional; si ves “doble línea”, déjalo OFF
-  auto* freeChart = new QChart();
-  freeChart->legend()->hide();
-  freeChart->addSeries(freeSeries_);
-  auto* axX2 = new QValueAxis(); axX2->setTitleText("t (s)"); axX2->setRange(0.0, 60.0);
-  auto* axY2 = new QValueAxis(); axY2->setTitleText("frees/s"); axY2->setRange(0.0, 1.0);
-  freeChart->addAxis(axX2, Qt::AlignBottom); freeChart->addAxis(axY2, Qt::AlignLeft);
-  freeSeries_->attachAxis(axX2); freeSeries_->attachAxis(axY2);
-  freeChart_ = new QChartView(freeChart);
-  freeChart_->setRenderHint(QPainter::Antialiasing);
-  root->addWidget(freeChart_);
 
   // ----- Top-3 por archivo -----
   top3_ = new QTableWidget(3, 3, this);
@@ -152,24 +126,6 @@ void GeneralTab::updateSnapshot(const MetricsSnapshot& s) {
   axX_mem_->setRange(std::max(0.0, t_ - WINDOW_S), t_);
   axY_mem_->setRange(0.0, std::max(axY_mem_->max(), std::max(1.0, memMB * 1.2)));
 
-  // ----- Series de allocs/s y frees/s -----
-  allocSeries_->append(t_, s.allocRate);
-  freeSeries_->append(t_, s.freeRate);
-
-  while (allocSeries_->count() > 0 && allocSeries_->at(0).x() < t_ - WINDOW_S)
-    allocSeries_->removePoints(0, 1);
-  while (freeSeries_->count() > 0 && freeSeries_->at(0).x() < t_ - WINDOW_S)
-    freeSeries_->removePoints(0, 1);
-
-  auto* axX1 = qobject_cast<QValueAxis*>(allocChart_->chart()->axisX());
-  auto* axY1 = qobject_cast<QValueAxis*>(allocChart_->chart()->axisY());
-  if (axX1) axX1->setRange(std::max(0.0, t_ - WINDOW_S), t_);
-  if (axY1) axY1->setRange(0.0, std::max(axY1->max(), std::max(1.0, s.allocRate * 1.3)));
-
-  auto* axX2 = qobject_cast<QValueAxis*>(freeChart_->chart()->axisX());
-  auto* axY2 = qobject_cast<QValueAxis*>(freeChart_->chart()->axisY());
-  if (axX2) axX2->setRange(std::max(0.0, t_ - WINDOW_S), t_);
-  if (axY2) axY2->setRange(0.0, std::max(axY2->max(), std::max(1.0, s.freeRate * 1.3)));
 
   // ----- Top-3 por archivo -----
   struct R { QString file; int allocs; qint64 bytes; };
