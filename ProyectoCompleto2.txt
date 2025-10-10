@@ -1,0 +1,3970 @@
+Estructura del directorio: C:\Users\Javier\OneDrive\Documentos\GitHub\MemoryProfiler
+
+MemoryProfiler
+├── .idea
+│   ├── .gitignore
+│   ├── .name
+│   ├── MemoryProfiler.iml
+│   ├── QtSettings.xml
+│   ├── editor.xml
+│   ├── misc.xml
+│   ├── modules.xml
+│   ├── vcs.xml
+│   ├── workspace.xml
+├── CMakeLists.txt
+├── Legacy
+│   ├── memprof.hpp
+│   ├── new_delete_overrides.cpp
+│   ├── registry.cpp
+│   ├── registry.hpp
+├── cmake.zip
+├── diagrama_uml.png
+├── examples
+│   ├── alloc_a.cpp
+│   ├── alloc_b.cpp
+│   ├── alloc_c.cpp
+│   ├── demo_leaks.cpp
+│   ├── demo_stress.cpp
+├── include
+│   ├── MetricsAggregator.h
+│   ├── MetricsCalculator.h
+├── src
+│   ├── MainWindow.cpp
+│   ├── MainWindow.h
+│   ├── MetricsAggregator.cpp
+│   ├── MetricsCalculator.cpp
+│   ├── lib
+│   │   ├── TcpClient.cpp
+│   │   ├── TcpClient.h
+│   │   ├── memprof_api.h
+│   │   ├── memprof_runtime.cpp
+│   ├── main.cpp
+│   ├── model
+│   │   ├── MetricsSnapshot.h
+│   │   ├── Reducers.cpp
+│   │   ├── Reducers.h
+│   │   ├── TableModels.cpp
+│   │   ├── TableModels.h
+│   ├── net
+│   │   ├── ServerWorker.cpp
+│   │   ├── ServerWorker.h
+│   ├── tabs
+│   │   ├── GeneralTab.cpp
+│   │   ├── GeneralTab.h
+│   │   ├── LeaksTab.cpp
+│   │   ├── LeaksTab.h
+│   │   ├── MapTab.cpp
+│   │   ├── MapTab.h
+│   │   ├── PerFileTab.cpp
+│   │   ├── PerFileTab.h
+├── tools
+│   ├── mock_broker.cpp
+├── tree_with_content_COMPLETO.txt
+
+================================================================================
+CONTENIDO DE ARCHIVOS
+================================================================================
+
+CMakeLists.txt:
+---------------
+cmake_minimum_required(VERSION 3.20)
+project(MemoryProfilerGUI LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# ---------- Qt: automoc/uic/rcc ----------
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC ON)
+
+# ---------- Busca Qt6, si no Qt5 ----------
+find_package(Qt6 COMPONENTS Widgets Charts Network QUIET)
+if (NOT Qt6_FOUND)
+    message(STATUS "Qt6 no encontrado, probando Qt5…")
+    find_package(Qt5 COMPONENTS Widgets Charts Network REQUIRED)
+    set(QT_PREFIX Qt5)
+else()
+    set(QT_PREFIX Qt6)
+endif()
+
+# ---------- Fuentes GUI ----------
+set(GUI_SRC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/MainWindow.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/tabs/GeneralTab.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/tabs/MapTab.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/tabs/PerFileTab.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/tabs/LeaksTab.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/net/ServerWorker.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/model/TableModels.cpp
+        # Si usas reducers u otros:
+        # ${CMAKE_CURRENT_SOURCE_DIR}/src/model/Reducers.cpp
+)
+
+add_executable(memory_profiler_gui ${GUI_SRC})
+
+target_include_directories(memory_profiler_gui PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(memory_profiler_gui PRIVATE
+        ${QT_PREFIX}::Widgets
+        ${QT_PREFIX}::Charts
+        ${QT_PREFIX}::Network
+)
+if (WIN32)
+    set_target_properties(memory_profiler_gui PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_compile_definitions(memory_profiler_gui PRIVATE NOMINMAX)
+endif()
+
+# ---------- Librería de instrumentación (SIN Qt) ----------
+# En tu CMakeLists.txt, en la librería memprof:
+add_library(memprof STATIC
+        Legacy/new_delete_overrides.cpp
+        Legacy/registry.cpp
+        src/MetricsAggregator.cpp
+        # src/MetricsCalculator.cpp  # si existe
+        src/lib/TcpClient.cpp        # <-- AQUI: usa src/lib si ese es tu path real
+        src/lib/memprof_runtime.cpp  # ya usas src/lib aquí, OK
+
+
+)
+target_include_directories(memprof PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/lib
+        ${CMAKE_CURRENT_SOURCE_DIR}/Legacy
+)
+target_compile_definitions(memprof PRIVATE MEMPROF_ENABLE_REGISTRY)
+target_compile_features(memprof PUBLIC cxx_std_20)
+if (WIN32)
+    target_link_libraries(memprof PUBLIC ws2_32)
+    target_compile_definitions(memprof PRIVATE NOMINMAX)
+elseif(UNIX AND NOT APPLE)
+    target_link_libraries(memprof PRIVATE pthread)
+endif()
+
+# ---------- Demos ----------
+add_executable(demo_leaks
+        examples/demo_leaks.cpp
+        examples/alloc_a.cpp
+        examples/alloc_b.cpp
+)
+target_link_libraries(demo_leaks PRIVATE memprof)
+target_compile_definitions(demo_leaks PRIVATE MEMPROF_WRAP_NEW)
+
+# Asegura el wrap de __FILE__/__LINE__ si lo usas
+
+
+# Enlaza con tu runtime/lib de instrumentation si aplica en tu proyecto
+# (ajusta el nombre según tu lib real)
+# target_link_libraries(demo_leaks PRIVATE memprof_runtime)
+
+
+add_executable(demo_stress
+        examples/demo_stress.cpp
+        examples/alloc_a.cpp
+        examples/alloc_b.cpp
+        examples/alloc_c.cpp
+)
+target_link_libraries(demo_stress PRIVATE memprof)
+# Captura file/line para que "Por archivo" muestre cada .cpp
+target_compile_definitions(demo_stress PRIVATE MEMPROF_WRAP_NEW)
+
+# (Opcional) salida bin
+# set_target_properties(memory_profiler_gui PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+# set_target_properties(demo_leaks          PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+# set_target_properties(demo_stress         PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+
+--------------------------------------------------
+
+memprof.hpp:
+------------
+#pragma once
+#include <cstdint>
+
+namespace memprof {
+
+    // ---- Datos de eventos que la GUI podría consumir ----
+    enum class EventKind : uint8_t { Alloc = 0, Free = 1 };
+
+    struct Event {
+        EventKind   kind;
+        void*       ptr;
+        std::size_t size;          // 0 para Free si no se conoce
+        const char* type;          // puede ser nullptr
+        const char* file;          // puede ser nullptr
+        int         line;          // 0 si no se pasa
+        std::uint64_t timestamp_ns;// monotónico
+        bool        is_array;      // new[] vs new
+        std::uint64_t thread_id;   // hash de std::thread::id
+    };
+
+    // Sink/callback para GUI (opcional). Si no se establece, no hace nada.
+    using Sink = void(*)(const Event&) noexcept;
+    void set_sink(Sink s) noexcept;
+
+    // Métricas básicas
+    std::uint64_t current_bytes() noexcept;
+    std::uint64_t peak_bytes() noexcept;
+    std::uint64_t total_allocs() noexcept;
+    std::uint64_t active_allocs() noexcept;
+
+    // (Opcional) Dump de fugas vivas a stdout
+    void dump_leaks_to_stdout() noexcept;
+
+} // namespace memprof
+
+// --- Captura de file/line/type: OPT-IN seguro ---
+// Si QUIERES redefinir 'new' en TU .cpp, haz:
+//   #define MEMPROF_ENABLE_NEW_MACRO
+//   #include "memprof.hpp"
+// Asegúrate de definirla DESPUÉS de incluir headers de la STL.
+
+#ifdef MEMPROF_ENABLE_NEW_MACRO
+// Declaraciones de los placement-like para file/line/type en ÁMBITO GLOBAL
+void* operator new (std::size_t, const char* file, int line);
+void* operator new[](std::size_t, const char* file, int line);
+void* operator new (std::size_t, const char* file, int line, const char* type);
+void* operator new[](std::size_t, const char* file, int line, const char* type);
+
+// Macro opcional (no la uses en headers de librerías/3rd-party)
+#define new new(__FILE__, __LINE__)
+
+// Alternativas seguras (sin redefinir 'new'):
+#define MP_NEW_OF(T, ...)        (::operator new(sizeof(T), __FILE__, __LINE__, #T), new T(__VA_ARGS__))
+#define MP_NEW_ARRAY_OF(T, N)    (static_cast<T*>(::operator new[](sizeof(T)*(N), __FILE__, __LINE__, #T)))
+#endif
+
+
+--------------------------------------------------
+
+new_delete_overrides.cpp:
+-------------------------
+// Legacy/new_delete_overrides.cpp
+#include <new>
+#include <cstddef>
+#include <cstdlib>
+#include <atomic>
+
+#if defined(_MSC_VER) || defined(__MINGW32__)
+  #include <malloc.h> // _aligned_malloc, _aligned_free
+#endif
+
+// --- OPCIONAL: notificación directa al runtime/GUI ---
+// #include "src/lib/memprof_api.h"
+
+// --- Registro opcional (tu registry.hpp legado) ---
+#ifdef MEMPROF_ENABLE_REGISTRY
+  #include "registry.hpp"
+  #define MP_REG_ALLOC_SCALAR(P,SZ,FILE,LINE,TYPE) memprof::register_alloc((P),(SZ),(FILE),(LINE),(TYPE),false)
+  #define MP_REG_ALLOC_ARRAY(P,SZ,FILE,LINE,TYPE)  memprof::register_alloc((P),(SZ),(FILE),(LINE),(TYPE),true)
+  #define MP_REG_FREE(P)                           memprof::register_free((P))
+#else
+  #define MP_REG_ALLOC_SCALAR(P,SZ,FILE,LINE,TYPE) ((void)0)
+  #define MP_REG_ALLOC_ARRAY(P,SZ,FILE,LINE,TYPE)  ((void)0)
+  #define MP_REG_FREE(P)                           ((void)0)
+#endif
+
+namespace {
+thread_local bool mp_in_new = false;
+
+struct ReentrancyGuard {
+  bool prev;
+  ReentrancyGuard() noexcept : prev(mp_in_new) { mp_in_new = true; }
+  ~ReentrancyGuard() { mp_in_new = prev; }
+};
+
+inline void* mp_aligned_alloc(std::size_t n, std::size_t alignment) {
+#if defined(_MSC_VER) || defined(__MINGW32__)
+  if (alignment == 0) alignment = alignof(std::max_align_t);
+  return _aligned_malloc(n, alignment);
+#else
+  if (alignment < sizeof(void*)) alignment = sizeof(void*);
+  void* ptr = nullptr;
+  if (posix_memalign(&ptr, alignment, n) != 0) return nullptr;
+  return ptr;
+#endif
+}
+
+inline void mp_aligned_free(void* p) noexcept {
+#if defined(_MSC_VER) || defined(__MINGW32__)
+  _aligned_free(p);
+#else
+  std::free(p);
+#endif
+}
+} // anon
+
+// ======================================================
+//              new / delete (ESCALAR)
+// ======================================================
+void* operator new(std::size_t n) {
+  if (n == 0) n = 1;
+
+  if (mp_in_new) {
+    void* p = std::malloc(n);
+    if (!p) throw std::bad_alloc();
+    return p;
+  }
+
+  ReentrancyGuard guard;
+  void* p = std::malloc(n);
+  if (!p) throw std::bad_alloc();
+
+  MP_REG_ALLOC_SCALAR(p, n, nullptr, 0, nullptr);
+  // memprof_record_alloc(p, n, "global_new", 0);
+  return p;
+}
+
+void operator delete(void* p) noexcept {
+  if (!p) return;
+
+  if (mp_in_new) { std::free(p); return; }
+
+  ReentrancyGuard guard;
+  // memprof_record_free(p);
+  MP_REG_FREE(p);
+  std::free(p);
+}
+
+// nothrow / sized
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+  try { return ::operator new(n); } catch (...) { return nullptr; }
+}
+void operator delete(void* p, const std::nothrow_t&) noexcept { ::operator delete(p); }
+void operator delete(void* p, std::size_t) noexcept { ::operator delete(p); }
+
+// ======================================================
+//              new[] / delete[] (ARREGLOS)
+// ======================================================
+void* operator new[](std::size_t n) {
+  if (n == 0) n = 1;
+
+  if (mp_in_new) {
+    void* p = std::malloc(n);
+    if (!p) throw std::bad_alloc();
+    return p;
+  }
+
+  ReentrancyGuard guard;
+  void* p = std::malloc(n);
+  if (!p) throw std::bad_alloc();
+
+  MP_REG_ALLOC_ARRAY(p, n, nullptr, 0, nullptr);
+  // memprof_record_alloc(p, n, "global_new[]", 0);
+  return p;
+}
+
+void operator delete[](void* p) noexcept {
+  if (!p) return;
+
+  if (mp_in_new) { std::free(p); return; }
+
+  ReentrancyGuard guard;
+  // memprof_record_free(p);
+  MP_REG_FREE(p);
+  std::free(p);
+}
+
+void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
+  try { return ::operator new[](n); } catch (...) { return nullptr; }
+}
+void operator delete[](void* p, const std::nothrow_t&) noexcept { ::operator delete[](p); }
+void operator delete[](void* p, std::size_t) noexcept { ::operator delete[](p); }
+
+// ======================================================
+//          ALIGNED new / delete (C++17)
+// ======================================================
+void* operator new(std::size_t n, std::align_val_t al) {
+  if (n == 0) n = 1;
+  const std::size_t alignment = static_cast<std::size_t>(al);
+
+  if (mp_in_new) {
+    void* p = mp_aligned_alloc(n, alignment);
+    if (!p) throw std::bad_alloc();
+    return p;
+  }
+
+  ReentrancyGuard guard;
+  void* p = mp_aligned_alloc(n, alignment);
+  if (!p) throw std::bad_alloc();
+
+  MP_REG_ALLOC_SCALAR(p, n, nullptr, 0, nullptr);
+  // memprof_record_alloc(p, n, "global_new_aligned", 0);
+  return p;
+}
+
+void operator delete(void* p, std::align_val_t al) noexcept {
+  if (!p) return; (void)al;
+
+  if (mp_in_new) { mp_aligned_free(p); return; }
+
+  ReentrancyGuard guard;
+  // memprof_record_free(p);
+  MP_REG_FREE(p);
+  mp_aligned_free(p);
+}
+
+void* operator new(std::size_t n, std::align_val_t al, const std::nothrow_t&) noexcept {
+  try { return ::operator new(n, al); } catch (...) { return nullptr; }
+}
+void operator delete(void* p, std::align_val_t al, const std::nothrow_t&) noexcept {
+  ::operator delete(p, al);
+}
+void operator delete(void* p, std::size_t, std::align_val_t al) noexcept {
+  ::operator delete(p, al);
+}
+
+// ======================================================
+//        ALIGNED new[] / delete[] (C++17)
+// ======================================================
+void* operator new[](std::size_t n, std::align_val_t al) {
+  if (n == 0) n = 1;
+  const std::size_t alignment = static_cast<std::size_t>(al);
+
+  if (mp_in_new) {
+    void* p = mp_aligned_alloc(n, alignment);
+    if (!p) throw std::bad_alloc();
+    return p;
+  }
+
+  ReentrancyGuard guard;
+  void* p = mp_aligned_alloc(n, alignment);
+  if (!p) throw std::bad_alloc();
+
+  MP_REG_ALLOC_ARRAY(p, n, nullptr, 0, nullptr);
+  // memprof_record_alloc(p, n, "global_new[]_aligned", 0);
+  return p;
+}
+
+void operator delete[](void* p, std::align_val_t al) noexcept {
+  if (!p) return; (void)al;
+
+  if (mp_in_new) { mp_aligned_free(p); return; }
+
+  ReentrancyGuard guard;
+  // memprof_record_free(p);
+  MP_REG_FREE(p);
+  mp_aligned_free(p);
+}
+
+// ======================================================
+//      Overloads adicionales (completan el set)
+// ======================================================
+
+// delete[] sized + aligned  (FALTANTE: ahora incluido)
+void operator delete[](void* p, std::size_t /*sz*/, std::align_val_t al) noexcept {
+  ::operator delete(p, al);
+}
+
+// new[] aligned + nothrow  (FALTANTE: ahora incluido)
+void* operator new[](std::size_t n, std::align_val_t al, const std::nothrow_t&) noexcept {
+  try { return ::operator new[](n, al); } catch (...) { return nullptr; }
+}
+
+// ======================================================
+// NOTA: se eliminaron las sobrecargas “placement-like”
+// (file/line[/type]) para no duplicar lo de memprof_api.h.
+// ======================================================
+
+
+--------------------------------------------------
+
+registry.cpp:
+-------------
+#include "registry.hpp"
+#include "memprof.hpp"
+
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
+#include <chrono>
+#include <thread>
+#include <cstdio>
+
+namespace {
+
+using clock_t = std::chrono::steady_clock;
+
+inline std::uint64_t now_ns() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        clock_t::now().time_since_epoch()).count();
+}
+
+inline std::uint64_t thread_id_u64() noexcept {
+    auto id = std::this_thread::get_id();
+    // hash estable suficiente para métricas
+    return std::hash<std::thread::id>{}(id);
+}
+
+struct State {
+    std::unordered_map<void*, memprof::AllocInfo> live;
+    std::mutex mtx;
+
+    std::atomic<std::uint64_t> bytes_current{0};
+    std::atomic<std::uint64_t> bytes_peak{0};
+    std::atomic<std::uint64_t> allocs_total{0};
+    std::atomic<std::uint64_t> allocs_active{0};
+    std::atomic<std::uint64_t> idgen{1};
+
+    memprof::Sink sink{nullptr};
+
+    void update_peak(std::uint64_t cur) {
+        auto old = bytes_peak.load(std::memory_order_relaxed);
+        while (cur > old &&
+               !bytes_peak.compare_exchange_weak(old, cur, std::memory_order_relaxed)) { /* spin */ }
+    }
+};
+
+State& S() {
+    static State s;
+    return s;
+}
+
+} // anon
+
+namespace memprof {
+
+void set_sink(Sink s) noexcept {
+    S().sink = s;
+}
+
+void register_alloc(void* p,
+                    std::size_t size,
+                    const char* file,
+                    int line,
+                    const char* type,
+                    bool is_array) noexcept
+{
+    if (!p) return;
+    auto& st = S();
+    const auto tns = now_ns();
+    const auto tid = thread_id_u64();
+    const auto id  = st.idgen.fetch_add(1, std::memory_order_relaxed);
+
+    {
+        std::lock_guard<std::mutex> lk(st.mtx);
+        AllocInfo ai;
+        ai.size        = size;
+        ai.file        = file;
+        ai.line        = line;
+        ai.type        = type;
+        ai.timestamp_ns= tns;
+        ai.id          = id;
+        ai.is_array    = is_array;
+        ai.thread_id   = tid;
+        st.live[p] = ai;
+    }
+
+    const auto cur = st.bytes_current.fetch_add(size, std::memory_order_relaxed) + size;
+    st.update_peak(cur);
+    st.allocs_total.fetch_add(1, std::memory_order_relaxed);
+    st.allocs_active.fetch_add(1, std::memory_order_relaxed);
+
+    if (st.sink) {
+        Event ev{ EventKind::Alloc, p, size, type, file, line, tns, is_array, tid };
+        st.sink(ev);
+    }
+}
+
+void register_free(void* p) noexcept {
+    if (!p) return;
+    auto& st = S();
+
+    std::size_t freed = 0;
+    const char* file = nullptr;
+    int line = 0;
+    const char* type = nullptr;
+    bool is_array = false;
+    std::uint64_t tns = now_ns();
+    std::uint64_t tid = thread_id_u64();
+
+    {
+        std::lock_guard<std::mutex> lk(st.mtx);
+        auto it = st.live.find(p);
+        if (it != st.live.end()) {
+            freed    = it->second.size;
+            file     = it->second.file;
+            line     = it->second.line;
+            type     = it->second.type;
+            is_array = it->second.is_array;
+            st.live.erase(it);
+        }
+    }
+
+    if (freed) {
+        st.bytes_current.fetch_sub(freed, std::memory_order_relaxed);
+        st.allocs_active.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    if (st.sink) {
+        Event ev{ EventKind::Free, p, freed, type, file, line, tns, is_array, tid };
+        st.sink(ev);
+    }
+}
+
+// Métricas
+std::uint64_t current_bytes() noexcept { return S().bytes_current.load(std::memory_order_relaxed); }
+std::uint64_t peak_bytes()    noexcept { return S().bytes_peak.load(std::memory_order_relaxed); }
+std::uint64_t total_allocs()  noexcept { return S().allocs_total.load(std::memory_order_relaxed); }
+std::uint64_t active_allocs() noexcept { return S().allocs_active.load(std::memory_order_relaxed); }
+
+// Dump de fugas
+void dump_leaks_to_stdout() noexcept {
+    auto& st = S();
+    std::lock_guard<std::mutex> lk(st.mtx);
+    if (st.live.empty()) {
+        std::printf("[memprof] No leaks.\n");
+        return;
+    }
+    std::printf("[memprof] Leaks (%zu):\n", st.live.size());
+    for (const auto& [ptr, ai] : st.live) {
+        std::printf("  ptr=%p size=%zu file=%s line=%d type=%s ts=%llu %s\n",
+            ptr, ai.size,
+            ai.file ? ai.file : "(?)",
+            ai.line,
+            ai.type ? ai.type : "(?)",
+            (unsigned long long)ai.timestamp_ns,
+            ai.is_array ? "[array]" : "[scalar]"
+        );
+    }
+}
+
+} // namespace memprof
+
+
+--------------------------------------------------
+
+registry.hpp:
+-------------
+#pragma once
+#include <cstddef>
+#include <cstdint>
+
+namespace memprof {
+
+    struct AllocInfo {
+        std::size_t  size{0};
+        const char*  type{nullptr};
+        const char*  file{nullptr};
+        int          line{0};
+        std::uint64_t timestamp_ns{0};
+        std::uint64_t id{0};
+        bool         is_array{false};
+        std::uint64_t thread_id{0};
+    };
+
+    void register_alloc(void* p,
+                        std::size_t size,
+                        const char* file,
+                        int line,
+                        const char* type,
+                        bool is_array) noexcept;
+
+    void register_free(void* p) noexcept;
+
+    // Métricas
+    std::uint64_t current_bytes() noexcept;
+    std::uint64_t peak_bytes() noexcept;
+    std::uint64_t total_allocs() noexcept;
+    std::uint64_t active_allocs() noexcept;
+
+    // Control/salida
+    void set_sink(void(*s)(const struct Event&) noexcept) noexcept; // definido en memprof.hpp
+    void dump_leaks_to_stdout() noexcept;
+
+} // namespace memprof
+
+
+--------------------------------------------------
+
+alloc_a.cpp:
+------------
+// examples/alloc_a.cpp
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+#include <atomic>
+#include "memprof_api.h"
+// Pequeñas: 16..512 bytes, alta tasa de asignación/liberación.
+void worker_small_churn(std::atomic<bool>& stop) {
+    std::mt19937 rng{12345};
+    std::uniform_int_distribution<int> smallSz(16, 512);
+    std::bernoulli_distribution keepProb(0.65); // mantener vivas para ver "activas"
+    std::vector<void*> live;
+    live.reserve(10000);
+
+    using namespace std::chrono_literals;
+
+    while (!stop.load()) {
+        // rachas de 200 asignaciones
+        for (int i = 0; i < 200; ++i) {
+            const int n = smallSz(rng);
+            // usamos char[] para llenar bins pequeños
+            char* p = new char[n];
+            // toque ligero al bloque para evitar que optimizador lo elimine
+            p[0] = 0xAB; p[n-1] = 0xCD;
+
+            if (keepProb(rng)) {
+                live.push_back(p);         // queda activo (aparece en mapa)
+            } else {
+                delete[] p;                // libera (impacta free_rate)
+            }
+        }
+
+        // churn: libera aprox 15% de los activos
+        for (size_t i = 0; i < live.size() / 7; ++i) {
+            size_t idx = i % live.size();
+            delete[] static_cast<char*>(live[idx]);
+            live[idx] = live.back();
+            live.pop_back();
+        }
+
+        std::this_thread::sleep_for(50ms);
+    }
+
+    // Deja ~10% como fugas pequeñas
+    size_t keep = live.size() / 10;
+    for (size_t i = keep; i < live.size(); ++i) {
+        delete[] static_cast<char*>(live[i]);
+    }
+    // las primeras 'keep' quedan filtradas por la GUI como leaks[]
+}
+
+
+--------------------------------------------------
+
+alloc_b.cpp:
+------------
+// examples/alloc_b.cpp
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+#include <atomic>
+#include <string>
+#include "memprof_api.h"
+struct Obj {
+    int a, b, c;
+    std::string s;
+    Obj(int x, int y) : a(x), b(y), c(x ^ y), s(32, 'x') {}
+};
+
+void worker_medium_mixed(std::atomic<bool>& stop) {
+    std::mt19937 rng{67890};
+    std::uniform_int_distribution<int> midSz(1024, 32 * 1024); // 1KB..32KB
+    std::bernoulli_distribution leakProb(0.15);
+    std::bernoulli_distribution keepProb(0.6);
+    std::vector<void*> liveBufs;
+    std::vector<Obj*>  liveObjs;
+    liveBufs.reserve(4000);
+    liveObjs.reserve(2000);
+
+    using namespace std::chrono_literals;
+
+    while (!stop.load()) {
+        // buffers medianos
+        for (int i = 0; i < 80; ++i) {
+            int n = midSz(rng);
+            char* p = new char[n];
+            p[0] = 0xEF; p[n-1] = 0xBE; // toque
+            if (keepProb(rng)) liveBufs.push_back(p); else delete[] p;
+        }
+
+        // objetos con new/delete regulares
+        for (int i = 0; i < 40; ++i) {
+            Obj* o = new Obj(i, i*2);
+            if (leakProb(rng)) {
+                liveObjs.push_back(o);   // algunos "leaks" de objetos
+            } else {
+                delete o;
+            }
+        }
+
+        // liberar parte de los activos para ver free_rate
+        if (!liveBufs.empty()) {
+            for (size_t k = 0; k < liveBufs.size() / 8; ++k) {
+                size_t idx = k % liveBufs.size();
+                delete[] static_cast<char*>(liveBufs[idx]);
+                liveBufs[idx] = liveBufs.back();
+                liveBufs.pop_back();
+            }
+        }
+        if (!liveObjs.empty()) {
+            for (size_t k = 0; k < liveObjs.size() / 5; ++k) {
+                size_t idx = k % liveObjs.size();
+                delete liveObjs[idx];
+                liveObjs[idx] = liveObjs.back();
+                liveObjs.pop_back();
+            }
+        }
+
+        std::this_thread::sleep_for(80ms);
+    }
+
+    // cierra casi todo; deja ~10% de leaks medianos/objetos
+    size_t keepB = liveBufs.size()/10, keepO = liveObjs.size()/10;
+    for (size_t i = keepB; i < liveBufs.size(); ++i) delete[] static_cast<char*>(liveBufs[i]);
+    for (size_t i = keepO; i < liveObjs.size(); ++i) delete liveObjs[i];
+    // lo restante queda como leak
+}
+
+
+--------------------------------------------------
+
+alloc_c.cpp:
+------------
+// examples/alloc_c.cpp
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+#include <atomic>
+#include "memprof_api.h"
+void worker_large_spikes(std::atomic<bool>& stop) {
+    using namespace std::chrono_literals;
+    std::mt19937 rng{13579};
+    std::uniform_int_distribution<int> bigSz(64 * 1024, 2 * 1024 * 1024); // 64KB..2MB
+    std::vector<void*> bigLive;
+    bigLive.reserve(512);
+
+    while (!stop.load()) {
+        // Pico de bloques grandes
+        for (int i = 0; i < 24; ++i) {
+            int n = bigSz(rng);
+            char* p = new char[n];
+            p[0] = 0x55; p[n-1] = 0xAA;
+            bigLive.push_back(p);
+        }
+        std::this_thread::sleep_for(300ms);
+
+        // Libera la mayoría (deja algunos vivos para "heap_peak" y bins altos)
+        for (size_t i = 0; i < bigLive.size(); ++i) {
+            // deja ~20% sin liberar esta vuelta
+            if (i % 5 != 0) {
+                delete[] static_cast<char*>(bigLive[i]);
+                bigLive[i] = nullptr;
+            }
+        }
+        // compacta vector y deja algunos vivos (acumulando leaks grandes)
+        std::vector<void*> tmp;
+        tmp.reserve(bigLive.size());
+        for (void* p : bigLive) if (p) tmp.push_back(p);
+        bigLive.swap(tmp);
+
+        // breve pausa para que la GUI vea el pico
+        std::this_thread::sleep_for(300ms);
+    }
+
+    // Deja ~15% como fugas grandes
+    size_t keep = bigLive.size() * 15 / 100;
+    for (size_t i = keep; i < bigLive.size(); ++i)
+        delete[] static_cast<char*>(bigLive[i]);
+    // lo demás queda como leak grande (aporta a leak_bytes)
+}
+
+
+--------------------------------------------------
+
+demo_leaks.cpp:
+---------------
+// examples/demo_leaks.cpp
+#include <vector>
+#include <thread>
+#include <chrono>
+#include <cstdio>
+#include <atomic>
+#include "memprof_api.h"
+
+// ---- Declaraciones forward: vienen de alloc_a.cpp y alloc_b.cpp ----
+void worker_small_churn(std::atomic<bool>& stop);   // alloc_a.cpp
+void worker_medium_mixed(std::atomic<bool>& stop);  // alloc_b.cpp
+
+int main() {
+    // Conecta al GUI (servidor) en 127.0.0.1:7070
+    memprof_init("127.0.0.1", 7070);
+    std::puts("[demo] arrancó; generando asignaciones y algunas fugas…");
+
+    // Lanza dos workers en TUs distintos para asegurar múltiples archivos
+    std::atomic<bool> stop{false};
+    std::thread tA([&]{ worker_small_churn(stop); });   // -> fugas atribuibles a alloc_a.cpp
+    std::thread tB([&]{ worker_medium_mixed(stop); });  // -> fugas atribuibles a alloc_b.cpp
+
+    // Además, fugas locales de este TU (demo_leaks.cpp) para una 3ra categoría
+    std::vector<char*> keep; keep.reserve(200);
+    for (int i = 0; i < 200; ++i) {
+        size_t sz = 1024 + (i % 64) * 1024;       // 1–65 KiB
+        char* p = new char[sz];
+        if (i % 3 == 0) keep.push_back(p); else delete[] p;
+        if (i % 20 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    // Espera suficiente para que el umbral de fugas (3000 ms) las marque como "leak"
+    std::puts("[demo] esperando 4s para clasificación de fugas…");
+    std::this_thread::sleep_for(std::chrono::seconds(4));
+
+    // Libera una parte de las locales
+    for (size_t i = 0; i < keep.size(); i += 5) {
+        delete[] keep[i]; keep[i] = nullptr;
+    }
+
+    std::puts("[demo] corriendo 5s más enviando snapshots…");
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+
+    // Detener workers (dejan ~10% como leaks según su propia lógica)
+    stop.store(true);
+    tA.join();
+    tB.join();
+
+    memprof_shutdown();
+    std::puts("[demo] fin.");
+    return 0;
+}
+
+
+--------------------------------------------------
+
+demo_stress.cpp:
+----------------
+// examples/demo_stress.cpp
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <random>
+#include <string>
+#include <thread>
+#include <vector>
+
+// IMPORTANTE: activar el wrapper y luego incluir la API DESPUÉS de la STL
+#define MEMPROF_WRAP_NEW 1
+#include "memprof_api.h"   // heredado desde el target 'memprof' (include dirs PUBLIC)
+
+static void sleep_ms(int ms) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+int main() {
+    std::puts("[demo_stress] start");
+    // Conéctate a la GUI (ServerWorker escucha por defecto en 7070)
+    memprof_init("127.0.0.1", 7070);
+
+    std::mt19937_64 rng{1234567};
+    std::uniform_int_distribution<int> alloc_size(1 << 10, 1 << 16); // 1KB..64KB
+    std::bernoulli_distribution        leak_prob(0.15);              // 15% quedan sin liberar
+    std::uniform_int_distribution<int> hold_ms(20, 200);             // tiempo de vida de bloques
+
+    struct Block { char* p; size_t n; int ttl; };
+    std::vector<Block> live;
+
+    const auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(20)) {
+        // lote de asignaciones
+        for (int i = 0; i < 200; ++i) {
+            const size_t n = static_cast<size_t>(alloc_size(rng));
+            char* p = new char[n];                 // envuelto por MEMPROF_WRAP_NEW
+            if (leak_prob(rng)) {
+                live.push_back({p, n, -1});        // -1 == leak (no se libera nunca)
+            } else {
+                live.push_back({p, n, hold_ms(rng)});
+            }
+        }
+
+        // reducir TTL y liberar algunas
+        for (auto& b : live) {
+            if (b.ttl > 0) {
+                b.ttl -= 10;
+                if (b.ttl <= 0) {
+                    delete[] b.p;                  // también envuelto
+                    b.p = nullptr;
+                    b.ttl = 0;
+                }
+            }
+        }
+
+        // compactar los ya liberados
+        live.erase(std::remove_if(live.begin(), live.end(),
+                   [](const Block& b){ return b.ttl == 0 && b.p == nullptr; }),
+                   live.end());
+
+        std::puts("[demo_stress] tick");
+        sleep_ms(10);
+    }
+
+    std::puts("[demo_stress] waiting 4s for leak classification...");
+    sleep_ms(4000);
+
+    std::puts("[demo_stress] done.");
+    memprof_shutdown();
+    return 0;
+}
+
+
+--------------------------------------------------
+
+MetricsAggregator.h:
+--------------------
+#pragma once
+#include <string>
+#include <unordered_map>
+#include <deque>
+#include <vector>
+#include <atomic>
+#include <mutex>
+#include <cstdint>
+
+class MetricsAggregator {
+public:
+    struct BlockInfo {
+        std::string ptr;     // dirección como string/hex
+        uint64_t    size = 0;
+        std::string file;
+        int         line = 0;
+        std::string type;
+        bool        is_array = false;
+        uint64_t    ts_ns = 0; // timestamp de alloc
+    };
+
+    struct FileStats {
+        uint64_t alloc_count = 0;  // nº total de allocs vistos
+        uint64_t alloc_bytes = 0;  // bytes totales asignados (histórico)
+        uint64_t live_count  = 0;  // allocs vivos
+        uint64_t live_bytes  = 0;  // bytes vivos
+    };
+
+    struct TimelinePoint {
+        uint64_t t_ns = 0;
+        uint64_t cur_bytes = 0;
+        uint64_t leak_bytes = 0;
+    };
+
+    struct LeaksKPIs {
+        uint64_t total_leak_bytes = 0;
+        double   leak_rate = 0.0;
+        struct { std::string file, ptr; uint64_t size = 0; } largest;
+        struct { std::string file; uint64_t count = 0, bytes = 0; } top_file_by_leaks;
+    };
+
+public:
+    explicit MetricsAggregator(size_t timeline_capacity = 4096);
+
+    // Ingesta de eventos (desde tus hooks/new/delete)
+    void onAlloc(const std::string& ptr, uint64_t size, uint64_t ts_ns,
+                 const std::string& file, int line,
+                 const std::string& type, bool is_array);
+    void onFree (const std::string& ptr, uint64_t hinted_size);
+
+    // Ingesta “texto json” (si envías eventos en JSON)
+    void processEvent(const std::string& json);
+
+    // Consulta de métricas agregadas
+    void getMetrics(uint64_t& current_bytes,
+                    uint64_t& peak_bytes,
+                    uint64_t& active_allocs,
+                    uint64_t& total_allocs,
+                    uint64_t& leak_bytes) const;
+
+    std::vector<TimelinePoint> getTimeline() const;
+    std::vector<BlockInfo>     getBlocks()   const;   // ← UNA sola declaración
+    std::unordered_map<std::string, FileStats> getFileStats() const;
+    LeaksKPIs getLeaksKPIs() const;
+
+    void     setLeakThresholdMs(uint64_t ms);
+    uint64_t getLeakThresholdMs() const;
+
+    static uint64_t now_ns();
+    static uint64_t now_ms();
+
+private:
+    // JSON helpers (mínimos)
+    static bool extractString(const std::string& json, const std::string& field, std::string& out);
+    static bool extractBool  (const std::string& json, const std::string& field, bool& out);
+    static bool extractUint64(const std::string& json, const std::string& field, uint64_t& out);
+    static bool extractInt   (const std::string& json, const std::string& field, int& out);
+
+    uint64_t computeLeakBytes_locked(uint64_t now_ns_val) const;
+    void     computeLeaksKPIs_locked(uint64_t now_ns_val, LeaksKPIs& out) const;
+    void     pushTimelinePoint_locked(uint64_t t_ns, uint64_t cur_b, uint64_t leak_b);
+
+private:
+    mutable std::mutex mtx_;
+    std::unordered_map<std::string, BlockInfo>  live_;
+    std::unordered_map<std::string, FileStats>  per_file_;
+    std::deque<TimelinePoint>                   timeline_;
+    size_t                                      timeline_cap_;
+
+    std::atomic<uint64_t> total_allocs_{0};
+    std::atomic<uint64_t> active_allocs_{0};
+    std::atomic<uint64_t> current_bytes_{0};
+    std::atomic<uint64_t> peak_bytes_{0};
+    std::atomic<uint64_t> leak_threshold_ms_{3000}; // p.ej. 3s
+};
+
+
+--------------------------------------------------
+
+MetricsCalculator.h:
+--------------------
+#pragma once
+#include <string>
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
+#include <chrono>
+
+struct MetricsSnapshot {
+    double current_mb;      // Memoria actual en MB
+    uint64_t active_allocs; // Asignaciones activas (bloques vivos)
+    double leak_mb;         // Memory leaks (según umbral) en MB
+    double peak_mb;         // Pico histórico en MB
+    uint64_t total_allocs;  // Total de ALLOC procesados
+    uint64_t timestamp_ms;  // Marca de tiempo del snapshot (epoch ms)
+
+    std::string toJSON() const;
+};
+
+class MetricsCalculator {
+public:
+    MetricsCalculator();
+
+    // Procesamiento de eventos JSON ("ALLOC"/"FREE")
+    void processEvent(const std::string& jsonEvent);
+
+    // Métricas actuales (thread-safe)
+    MetricsSnapshot getSnapshot() const;
+
+    // Configuración de umbral de "leak" (en ms)
+    void setLeakThresholdMs(uint64_t ms);
+
+    // Reinicia estado y contadores
+    void reset();
+
+private:
+    struct AllocInfo {
+        uint64_t size = 0;
+        uint64_t timestamp_ns = 0; // ts del evento (ns)
+        std::string file;
+        int line = 0;
+        std::string type;
+        bool is_array = false;
+    };
+
+    // Estado
+    mutable std::mutex mtx_;
+    std::unordered_map<std::string, AllocInfo> live_allocs_; // ptr -> info
+
+    std::atomic<uint64_t> current_bytes_{0};
+    std::atomic<uint64_t> peak_bytes_{0};
+    std::atomic<uint64_t> active_allocs_{0};
+    std::atomic<uint64_t> total_allocs_{0};
+    std::atomic<uint64_t> leak_threshold_ms_{30000}; // 30s por defecto
+
+    // Helpers privados
+    void processAlloc(const std::string& ptr, uint64_t size, uint64_t ts_ns,
+                      const std::string& file, int line,
+                      const std::string& type, bool is_array);
+
+    void processFree(const std::string& ptr, uint64_t hinted_size);
+
+    uint64_t calculateLeakBytes() const;
+    static uint64_t nowMs();
+};
+
+
+--------------------------------------------------
+
+MainWindow.cpp:
+---------------
+// src/MainWindow.cpp
+#include "MainWindow.h"
+#include <QTabWidget>
+#include <QStatusBar>
+#include <QThread>
+#include <QHostAddress>
+
+#include "tabs/GeneralTab.h"
+#include "tabs/MapTab.h"
+#include "tabs/PerFileTab.h"
+#include "tabs/LeaksTab.h"
+#include "net/ServerWorker.h"
+#include "model/MetricsSnapshot.h"
+
+#include <QMetaType>
+
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+    // Pestañas
+    tabs_    = new QTabWidget(this);
+    general_ = new GeneralTab(this);
+    map_     = new MapTab(this);
+    perFile_ = new PerFileTab(this);
+    leaks_   = new LeaksTab(this);
+
+    tabs_->addTab(general_, "General");
+    tabs_->addTab(map_,     "Mapa");
+    tabs_->addTab(perFile_, "Por archivo");
+    tabs_->addTab(leaks_,   "Leaks");
+    setCentralWidget(tabs_);
+    statusBar()->showMessage("Listo");
+
+    // Registro de tipo para señales entre hilos
+    qRegisterMetaType<MetricsSnapshot>("MetricsSnapshot");
+
+    // Hilo + worker (worker sin padre, para moveToThread)
+    thread_ = new QThread(this);
+    worker_ = new ServerWorker();
+    worker_->moveToThread(thread_);
+
+    // Arrancar escucha en el hilo del worker
+    connect(thread_, &QThread::started, worker_, [this]{
+        worker_->listen(QHostAddress::LocalHost, 7070);
+    });
+
+    // Estado a la barra de estado
+    connect(worker_, &ServerWorker::status, this, &MainWindow::onStatus);
+
+    // Snapshot -> actualizar pestañas
+    connect(worker_, &ServerWorker::snapshotReady, this, &MainWindow::onSnapshot);
+
+    // Limpieza segura
+    connect(thread_, &QThread::finished, worker_, &QObject::deleteLater);
+
+    thread_->start();
+}
+
+MainWindow::~MainWindow() {
+    if (thread_) {
+        thread_->quit();
+        thread_->wait();
+    }
+}
+
+void MainWindow::onSnapshot(const MetricsSnapshot& s) {
+    general_->updateSnapshot(s);
+    map_->updateSnapshot(s);
+    perFile_->updateSnapshot(s);
+    leaks_->updateSnapshot(s);
+}
+
+void MainWindow::onStatus(const QString& st) {
+    statusBar()->showMessage(st, 3000);
+}
+
+
+--------------------------------------------------
+
+MainWindow.h:
+-------------
+#pragma once
+#include <QMainWindow>
+#include <QString>
+#include "model/MetricsSnapshot.h"
+
+class QTabWidget;
+class QThread;
+class ServerWorker;
+class GeneralTab;
+class MapTab;
+class PerFileTab;
+class LeaksTab;
+
+class MainWindow : public QMainWindow {
+    Q_OBJECT
+public:
+    explicit MainWindow(QWidget* parent = nullptr);
+    ~MainWindow() override;
+
+private slots:
+    void onSnapshot(const MetricsSnapshot& s);
+    void onStatus(const QString& st);
+
+private:
+    QTabWidget* tabs_ = nullptr;
+    GeneralTab* general_ = nullptr;
+    MapTab*     map_ = nullptr;
+    PerFileTab* perFile_ = nullptr;
+    LeaksTab*   leaks_ = nullptr;
+
+    QThread*     thread_ = nullptr;   // <-- faltaba
+    ServerWorker* worker_ = nullptr;  // <-- por claridad
+};
+
+
+--------------------------------------------------
+
+MetricsAggregator.cpp:
+----------------------
+#include "MetricsAggregator.h"   // unificado
+
+#include <chrono>
+#include <cctype>
+#include <sstream>
+#include <algorithm>
+#include <mutex>
+
+MetricsAggregator::MetricsAggregator(size_t timeline_capacity)
+    : timeline_cap_(timeline_capacity ? timeline_capacity : 4096) {}
+
+uint64_t MetricsAggregator::now_ns() {
+    using namespace std::chrono;
+    return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+uint64_t MetricsAggregator::now_ms() {
+    using namespace std::chrono;
+    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// -------- helpers JSON mínimos --------
+namespace {
+inline void skipSpaces(const std::string& s, size_t& i) {
+    while (i < s.size() && std::isspace((unsigned char)s[i])) ++i;
+}
+bool parseJSONStringAt(const std::string& s, size_t& i, std::string& out) {
+    skipSpaces(s, i);
+    if (i >= s.size() || s[i] != '"') return false;
+    ++i;
+    std::string acc;
+    while (i < s.size()) {
+        char c = s[i++];
+        if (c == '\\') {
+            if (i >= s.size()) break;
+            char e = s[i++];
+            if (e == '"' || e == '\\' || e == '/') acc.push_back(e);
+            else if (e == 'b') acc.push_back('\b');
+            else if (e == 'f') acc.push_back('\f');
+            else if (e == 'n') acc.push_back('\n');
+            else if (e == 'r') acc.push_back('\r');
+            else if (e == 't') acc.push_back('\t');
+            else acc.push_back(e);
+        } else if (c == '"') {
+            out.swap(acc);
+            return true;
+        } else {
+            acc.push_back(c);
+        }
+    }
+    return false;
+}
+bool seekFieldValue(const std::string& json, const std::string& field, size_t& i) {
+    const std::string q = "\"" + field + "\"";
+    size_t pos = json.find(q, i);
+    if (pos == std::string::npos) return false;
+    pos += q.size();
+    while (pos < json.size() && std::isspace((unsigned char)json[pos])) ++pos;
+    if (pos >= json.size() || json[pos] != ':') return false;
+    ++pos;
+    i = pos;
+    return true;
+}
+} // anon
+
+bool MetricsAggregator::extractString(const std::string& json, const std::string& field, std::string& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    return parseJSONStringAt(json, i, out);
+}
+bool MetricsAggregator::extractBool(const std::string& json, const std::string& field, bool& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    skipSpaces(json, i);
+    if (json.compare(i, 4, "true")  == 0) { out = true;  return true; }
+    if (json.compare(i, 5, "false") == 0) { out = false; return true; }
+    return false;
+}
+bool MetricsAggregator::extractUint64(const std::string& json, const std::string& field, uint64_t& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    skipSpaces(json, i);
+    if (i < json.size() && json[i] == '"') {
+        std::string tmp;
+        if (!parseJSONStringAt(json, i, tmp)) return false;
+        char* endp = nullptr;
+        int base = (tmp.rfind("0x", 0) == 0 || tmp.rfind("0X", 0) == 0) ? 16 : 10;
+        unsigned long long v = std::strtoull(tmp.c_str(), &endp, base);
+        out = (uint64_t)v;
+        return true;
+    } else {
+        uint64_t v = 0; bool any = false;
+        while (i < json.size() && std::isdigit((unsigned char)json[i])) {
+            any = true;
+            v = v * 10 + (uint64_t)(json[i] - '0');
+            ++i;
+        }
+        if (!any) return false;
+        out = v;
+        return true;
+    }
+}
+bool MetricsAggregator::extractInt(const std::string& json, const std::string& field, int& out) {
+    uint64_t u = 0;
+    if (!extractUint64(json, field, u)) return false;
+    out = (int)u;
+    return true;
+}
+
+// -------- lógica principal --------
+void MetricsAggregator::onAlloc(const std::string& ptr, uint64_t size, uint64_t ts_ns,
+                                const std::string& file, int line,
+                                const std::string& type, bool is_array) {
+    total_allocs_.fetch_add(1, std::memory_order_relaxed);
+    active_allocs_.fetch_add(1, std::memory_order_relaxed);
+    uint64_t cur = current_bytes_.fetch_add(size, std::memory_order_relaxed) + size;
+
+    uint64_t old_peak = peak_bytes_.load(std::memory_order_relaxed);
+    while (cur > old_peak &&
+           !peak_bytes_.compare_exchange_weak(old_peak, cur, std::memory_order_relaxed)) {}
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        BlockInfo bi;
+        bi.ptr = ptr; bi.size = size; bi.file = file; bi.line = line; bi.type = type; bi.is_array = is_array; bi.ts_ns = ts_ns;
+        live_[ptr] = bi;
+
+        auto& fs = per_file_[file];
+        fs.alloc_count += 1;
+        fs.alloc_bytes += size;
+        fs.live_count  += 1;
+        fs.live_bytes  += size;
+
+        uint64_t t = now_ns();
+        uint64_t leak_b = computeLeakBytes_locked(t);
+        pushTimelinePoint_locked(t, cur, leak_b);
+    }
+}
+
+void MetricsAggregator::onFree(const std::string& ptr, uint64_t hinted_size) {
+    uint64_t sub = 0;
+    std::string file;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto it = live_.find(ptr);
+        if (it != live_.end()) {
+            sub = it->second.size;
+            file = it->second.file;
+
+            auto fit = per_file_.find(file);
+            if (fit != per_file_.end()) {
+                if (fit->second.live_count > 0)    fit->second.live_count -= 1;
+                if (fit->second.live_bytes >= sub) fit->second.live_bytes -= sub;
+                else                                fit->second.live_bytes = 0;
+            }
+            live_.erase(it);
+        }
+    }
+
+    if (sub > 0) {
+        current_bytes_.fetch_sub(sub, std::memory_order_relaxed);
+        active_allocs_.fetch_sub(1, std::memory_order_relaxed);
+
+        std::lock_guard<std::mutex> lk(mtx_);
+        uint64_t t   = now_ns();
+        uint64_t cur = current_bytes_.load(std::memory_order_relaxed);
+        uint64_t leak_b = computeLeakBytes_locked(t);
+        pushTimelinePoint_locked(t, cur, leak_b);
+    } else {
+        (void)hinted_size;
+    }
+}
+
+uint64_t MetricsAggregator::computeLeakBytes_locked(uint64_t now_ns_val) const {
+    const uint64_t thr_ns = leak_threshold_ms_.load(std::memory_order_relaxed) * 1000000ULL;
+    uint64_t leak = 0;
+    for (const auto& kv : live_) {
+        const auto& bi = kv.second;
+        if (now_ns_val > bi.ts_ns && (now_ns_val - bi.ts_ns) > thr_ns) {
+            leak += bi.size;
+        }
+    }
+    return leak;
+}
+
+void MetricsAggregator::pushTimelinePoint_locked(uint64_t t_ns, uint64_t cur_b, uint64_t leak_b) {
+    timeline_.push_back(TimelinePoint{t_ns, cur_b, leak_b});
+    if (timeline_.size() > timeline_cap_) timeline_.pop_front();
+}
+
+void MetricsAggregator::computeLeaksKPIs_locked(uint64_t now_ns_val, LeaksKPIs& out) const {
+    const uint64_t thr_ns = leak_threshold_ms_.load(std::memory_order_relaxed) * 1000000ULL;
+
+    std::unordered_map<std::string, std::pair<uint64_t,uint64_t>> per_file_leaks;
+    uint64_t count_leaks = 0, total_leak_b = 0;
+
+    uint64_t max_b = 0;
+    std::string max_ptr, max_file;
+
+    for (const auto& kv : live_) {
+        const auto& bi = kv.second;
+        if (now_ns_val > bi.ts_ns && (now_ns_val - bi.ts_ns) > thr_ns) {
+            ++count_leaks;
+            total_leak_b += bi.size;
+            auto& pf = per_file_leaks[bi.file];
+            pf.first  += 1;
+            pf.second += bi.size;
+
+            if (bi.size > max_b) {
+                max_b   = bi.size;
+                max_ptr = bi.ptr;
+                max_file= bi.file;
+            }
+        }
+    }
+
+    std::string top_file; uint64_t top_count = 0, top_bytes = 0;
+    for (const auto& kv : per_file_leaks) {
+        if (kv.second.first > top_count || (kv.second.first == top_count && kv.second.second > top_bytes)) {
+            top_file  = kv.first;
+            top_count = kv.second.first;
+            top_bytes = kv.second.second;
+        }
+    }
+
+    out.total_leak_bytes         = total_leak_b;
+    const uint64_t tallocs       = total_allocs_.load(std::memory_order_relaxed);
+    out.leak_rate                = (tallocs > 0) ? (double)count_leaks / (double)tallocs : 0.0;
+    out.largest.file             = max_file;
+    out.largest.ptr              = max_ptr;
+    out.largest.size             = max_b;
+    out.top_file_by_leaks.file   = top_file;
+    out.top_file_by_leaks.count  = top_count;
+    out.top_file_by_leaks.bytes  = top_bytes;
+}
+
+void MetricsAggregator::processEvent(const std::string& json) {
+    std::string kind;
+    if (!extractString(json, "kind", kind)) return;
+
+    if (kind == "ALLOC") {
+        std::string ptr, file, type;
+        uint64_t size = 0, ts_ns = 0;
+        int line = 0; bool is_arr = false;
+        extractString(json, "ptr", ptr);
+        extractUint64(json, "size", size);
+        extractUint64(json, "ts_ns", ts_ns);
+        extractString(json, "file", file);
+        extractInt   (json, "line", line);
+        extractString(json, "type", type);
+        extractBool  (json, "is_array", is_arr);
+        if (!ptr.empty() && size > 0) onAlloc(ptr, size, ts_ns, file, line, type, is_arr);
+    } else if (kind == "FREE") {
+        std::string ptr; uint64_t hinted = 0;
+        extractString(json, "ptr", ptr);
+        extractUint64(json, "size", hinted);
+        if (!ptr.empty()) onFree(ptr, hinted);
+    }
+}
+
+void MetricsAggregator::getMetrics(uint64_t& current_bytes,
+                                   uint64_t& peak_bytes,
+                                   uint64_t& active_allocs,
+                                   uint64_t& total_allocs,
+                                   uint64_t& leak_bytes) const {
+    current_bytes = current_bytes_.load(std::memory_order_relaxed);
+    peak_bytes    = peak_bytes_.load(std::memory_order_relaxed);
+    active_allocs = active_allocs_.load(std::memory_order_relaxed);
+    total_allocs  = total_allocs_.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lk(mtx_);
+    leak_bytes    = computeLeakBytes_locked(now_ns());
+}
+
+std::vector<MetricsAggregator::TimelinePoint> MetricsAggregator::getTimeline() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return std::vector<TimelinePoint>(timeline_.begin(), timeline_.end());
+}
+
+std::vector<MetricsAggregator::BlockInfo> MetricsAggregator::getBlocks() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::vector<BlockInfo> out;
+    out.reserve(live_.size());
+    for (const auto& kv : live_) out.push_back(kv.second);
+    return out;
+}
+
+std::unordered_map<std::string, MetricsAggregator::FileStats>
+MetricsAggregator::getFileStats() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return per_file_;
+}
+
+MetricsAggregator::LeaksKPIs MetricsAggregator::getLeaksKPIs() const {
+    LeaksKPIs k{};
+    std::lock_guard<std::mutex> lk(mtx_);
+    computeLeaksKPIs_locked(now_ns(), k);
+    return k;
+}
+
+void MetricsAggregator::setLeakThresholdMs(uint64_t ms) {
+    leak_threshold_ms_.store(ms, std::memory_order_relaxed);
+}
+uint64_t MetricsAggregator::getLeakThresholdMs() const {
+    return leak_threshold_ms_.load(std::memory_order_relaxed);
+}
+
+
+--------------------------------------------------
+
+MetricsCalculator.cpp:
+----------------------
+#include "MetricsCalculator.h"
+#include <mutex>  // asegúrate de tener este include arriba del archivo
+#include <sstream>
+#include <iomanip>
+#include <cctype>
+#include <algorithm>
+
+// -------------------------------
+// Helpers locales para JSON simple
+// -------------------------------
+
+namespace {
+
+// avanza i para saltar espacios
+inline void skipSpaces(const std::string& s, size_t& i) {
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+}
+
+// extrae literal string: "...."
+bool parseJSONStringAt(const std::string& s, size_t& i, std::string& out) {
+    skipSpaces(s, i);
+    if (i >= s.size() || s[i] != '"') return false;
+    ++i; // salta comillas inicial
+    std::string acc;
+    while (i < s.size()) {
+        char c = s[i++];
+        if (c == '\\') {
+            if (i >= s.size()) break;
+            char e = s[i++];
+            // soporto escapes básicos
+            if (e == '"' || e == '\\' || e == '/') acc.push_back(e);
+            else if (e == 'b') acc.push_back('\b');
+            else if (e == 'f') acc.push_back('\f');
+            else if (e == 'n') acc.push_back('\n');
+            else if (e == 'r') acc.push_back('\r');
+            else if (e == 't') acc.push_back('\t');
+            else acc.push_back(e);
+        } else if (c == '"') {
+            out.swap(acc);
+            return true;
+        } else {
+            acc.push_back(c);
+        }
+    }
+    return false;
+}
+
+// busca `"field":` y deja i al inicio del valor
+bool seekFieldValue(const std::string& json, const std::string& field, size_t& i) {
+    const std::string quoted = "\"" + field + "\"";
+    size_t pos = json.find(quoted, i);
+    if (pos == std::string::npos) return false;
+    pos += quoted.size();
+    // saltar espacios y colon
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+    if (pos >= json.size() || json[pos] != ':') return false;
+    ++pos;
+    i = pos;
+    return true;
+}
+
+bool extractString(const std::string& json, const std::string& field, std::string& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    return parseJSONStringAt(json, i, out);
+}
+
+bool extractBool(const std::string& json, const std::string& field, bool& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    skipSpaces(json, i);
+    if (json.compare(i, 4, "true") == 0) { out = true;  return true; }
+    if (json.compare(i, 5, "false") == 0){ out = false; return true; }
+    return false;
+}
+
+bool extractUint64(const std::string& json, const std::string& field, uint64_t& out) {
+    size_t i = 0;
+    if (!seekFieldValue(json, field, i)) return false;
+    skipSpaces(json, i);
+    // número (decimal) o "0x..." como string (algunos emisores envían ptr como string)
+    if (i < json.size() && json[i] == '"') {
+        // intentar leer string y luego parsear (por si viene "1234")
+        std::string tmp;
+        if (!parseJSONStringAt(json, i, tmp)) return false;
+        if (tmp.rfind("0x", 0) == 0 || tmp.rfind("0X", 0) == 0) {
+            // valor hexadecimal — convertir a uint64
+            char* endp = nullptr;
+            unsigned long long v = std::strtoull(tmp.c_str(), &endp, 16);
+            out = static_cast<uint64_t>(v);
+            return true;
+        } else {
+            // decimal en string
+            char* endp = nullptr;
+            unsigned long long v = std::strtoull(tmp.c_str(), &endp, 10);
+            out = static_cast<uint64_t>(v);
+            return true;
+        }
+    } else {
+        // número crudo
+        uint64_t v = 0;
+        bool any = false;
+        while (i < json.size() && std::isdigit(static_cast<unsigned char>(json[i]))) {
+            any = true;
+            v = v * 10 + static_cast<uint64_t>(json[i] - '0');
+            ++i;
+        }
+        if (!any) return false;
+        out = v;
+        return true;
+    }
+}
+
+// Permite leer un entero "line" que viene como número
+bool extractInt(const std::string& json, const std::string& field, int& out) {
+    uint64_t u = 0;
+    if (!extractUint64(json, field, u)) return false;
+    out = static_cast<int>(u);
+    return true;
+}
+
+} // namespace
+
+
+// -------------------------------
+// Métricas -> JSON
+// -------------------------------
+std::string MetricsSnapshot::toJSON() const {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2);
+    oss << "{"
+        << "\"current_mb\":"   << current_mb   << ","
+        << "\"active_allocs\":"<< active_allocs<< ","
+        << "\"leak_mb\":"      << leak_mb      << ","
+        << "\"peak_mb\":"      << peak_mb      << ","
+        << "\"total_allocs\":" << total_allocs << ","
+        << "\"timestamp_ms\":" << timestamp_ms
+        << "}";
+    return oss.str();
+}
+
+// -------------------------------
+// MetricsCalculator
+// -------------------------------
+MetricsCalculator::MetricsCalculator() = default;
+
+void MetricsCalculator::processAlloc(const std::string& ptr, uint64_t size, uint64_t ts_ns,
+                                     const std::string& file, int line,
+                                     const std::string& type, bool is_array)
+{
+    // Ajuste contadores atómicos
+    current_bytes_.fetch_add(size, std::memory_order_relaxed);
+    active_allocs_.fetch_add(1, std::memory_order_relaxed);
+    total_allocs_.fetch_add(1, std::memory_order_relaxed);
+
+    // Peak
+    uint64_t cur = current_bytes_.load(std::memory_order_relaxed);
+    uint64_t prev_peak = peak_bytes_.load(std::memory_order_relaxed);
+    while (cur > prev_peak && !peak_bytes_.compare_exchange_weak(prev_peak, cur, std::memory_order_relaxed)) {
+        // prev_peak actualizado por compare_exchange_weak
+    }
+
+    // Registrar bloque vivo
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        live_allocs_[ptr] = AllocInfo{ size, ts_ns, file, line, type, is_array };
+    }
+}
+
+void MetricsCalculator::processFree(const std::string& ptr, uint64_t hinted_size) {
+    uint64_t size_to_sub = 0;
+    bool found = false;
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto it = live_allocs_.find(ptr);
+        if (it != live_allocs_.end()) {
+            size_to_sub = it->second.size;
+            live_allocs_.erase(it);
+            found = true;
+        }
+    }
+
+    if (found) {
+        // Si el emisor envía el size en FREE y difiere, preferimos el registrado en ALLOC
+        current_bytes_.fetch_sub(size_to_sub, std::memory_order_relaxed);
+        active_allocs_.fetch_sub(1, std::memory_order_relaxed);
+        // peak no se reduce
+    } else {
+        // FREE huérfano: ignorar sin afectar contadores
+        (void)hinted_size;
+    }
+}
+
+void MetricsCalculator::processEvent(const std::string& jsonEvent) {
+    // Campos mínimos
+    std::string kind;
+    if (!extractString(jsonEvent, "kind", kind)) return;
+
+    if (kind == "ALLOC") {
+        std::string ptr; (void)ptr;
+        uint64_t size = 0, ts_ns = 0;
+        std::string file, type;
+        int line = 0; bool is_arr = false;
+
+        // ptr suele venir como string:
+        extractString(jsonEvent, "ptr", ptr);
+        extractUint64(jsonEvent, "size", size);
+        extractUint64(jsonEvent, "ts_ns", ts_ns);
+        extractString(jsonEvent, "file", file);
+        extractInt(jsonEvent, "line", line);
+        extractString(jsonEvent, "type", type);
+        extractBool(jsonEvent, "is_array", is_arr);
+
+        if (!ptr.empty() && size > 0) {
+            processAlloc(ptr, size, ts_ns, file, line, type, is_arr);
+        }
+    }
+    else if (kind == "FREE") {
+        std::string ptr; (void)ptr;
+        uint64_t size = 0;
+        extractString(jsonEvent, "ptr", ptr);
+        extractUint64(jsonEvent, "size", size); // puede venir, pero no es obligatorio
+        if (!ptr.empty()) {
+            processFree(ptr, size);
+        }
+    }
+    // otros "kind" se ignoran de momento
+}
+
+uint64_t MetricsCalculator::nowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+uint64_t MetricsCalculator::calculateLeakBytes() const {
+    const uint64_t now_ms = nowMs();
+    const uint64_t threshold_ns = leak_threshold_ms_.load(std::memory_order_relaxed) * 1000000ULL;
+
+    uint64_t leak = 0;
+    std::lock_guard<std::mutex> lk(mtx_);
+    for (const auto& kv : live_allocs_) {
+        const auto& info = kv.second;
+        uint64_t age_ns = (now_ms * 1000000ULL);
+        if (age_ns > info.timestamp_ns) {
+            age_ns -= info.timestamp_ns;
+            if (age_ns > threshold_ns) leak += info.size;
+        }
+    }
+    return leak;
+}
+
+MetricsSnapshot MetricsCalculator::getSnapshot() const {
+    MetricsSnapshot s;
+    const double MB = 1024.0 * 1024.0;
+
+    const uint64_t cur_b  = current_bytes_.load(std::memory_order_relaxed);
+    const uint64_t peak_b = peak_bytes_.load(std::memory_order_relaxed);
+
+    s.current_mb    = static_cast<double>(cur_b)  / MB;
+    s.peak_mb       = static_cast<double>(peak_b) / MB;
+    s.active_allocs = active_allocs_.load(std::memory_order_relaxed);
+    s.total_allocs  = total_allocs_.load(std::memory_order_relaxed);
+    s.timestamp_ms  = nowMs();
+
+    const uint64_t leak_b = calculateLeakBytes();
+    s.leak_mb = static_cast<double>(leak_b) / MB;
+
+    return s;
+}
+
+void MetricsCalculator::setLeakThresholdMs(uint64_t ms) {
+    leak_threshold_ms_.store(ms, std::memory_order_relaxed);
+}
+
+void MetricsCalculator::reset() {
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        live_allocs_.clear();
+    }
+    current_bytes_.store(0, std::memory_order_relaxed);
+    peak_bytes_.store(0, std::memory_order_relaxed);
+    active_allocs_.store(0, std::memory_order_relaxed);
+    total_allocs_.store(0, std::memory_order_relaxed);
+    // No tocamos leak_threshold_ms_
+}
+
+
+--------------------------------------------------
+
+TcpClient.cpp:
+--------------
+#include "TcpClient.h"
+#include <cstring>
+#include <string>
+#include <cstdint>   // <-- NECESARIO para uint16_t
+
+#if defined(_WIN32)
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  #pragma comment(lib, "Ws2_32.lib")
+  static bool g_wsastarted = false;
+#else
+  #include <sys/types.h>
+  #include <sys/socket.h>
+  #include <arpa/inet.h>
+  #include <netdb.h>
+  #include <unistd.h>
+  #define INVALID_SOCKET (-1)
+  #define SOCKET_ERROR   (-1)
+#endif
+
+TcpClient::TcpClient() {
+#if defined(_WIN32)
+    if (!g_wsastarted) {
+        WSADATA wsaData;
+        if (WSAStartup(MAKEWORD(2,2), &wsaData) == 0) g_wsastarted = true;
+    }
+#endif
+}
+
+TcpClient::~TcpClient() {
+    close();
+#if defined(_WIN32)
+    // no WSACleanup global (se comparte con otros sockets)
+#endif
+}
+
+bool TcpClient::connectTo(const char* host, int port) {
+    close();
+    if (!host || !*host || port <= 0) return false;
+
+#if defined(_WIN32)
+    SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return false;
+#else
+    int s = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) return false;
+#endif
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(static_cast<uint16_t>(port)); // <-- ya compila
+
+#if defined(_WIN32)
+    // inet_pton en Windows: usa InetPtonA
+    if (InetPtonA(AF_INET, host, &addr.sin_addr) != 1) {
+        // fallback: intenta resolver por nombre
+        addrinfo hints{}; hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
+        addrinfo* res = nullptr;
+        if (getaddrinfo(host, nullptr, &hints, &res) == 0 && res) {
+            addr.sin_addr = ((sockaddr_in*)res->ai_addr)->sin_addr;
+            freeaddrinfo(res);
+        } else {
+            ::closesocket(s);
+            return false;
+        }
+    }
+#else
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        ::close(s);
+        return false;
+    }
+#endif
+
+    if (::connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+#if defined(_WIN32)
+        ::closesocket(s);
+#else
+        ::close(s);
+#endif
+        return false;
+    }
+
+#if defined(_WIN32)
+    sock_ = static_cast<int>(s);
+#else
+    sock_ = s;
+#endif
+    return true;
+}
+
+bool TcpClient::isConnected() const {
+    return sock_ != -1;
+}
+
+void TcpClient::close() {
+    if (sock_ != -1) {
+#if defined(_WIN32)
+        ::closesocket(static_cast<SOCKET>(sock_));
+#else
+        ::close(sock_);
+#endif
+        sock_ = -1;
+    }
+}
+
+bool TcpClient::sendLine(const std::string& line) {
+    if (sock_ == -1) return false;
+    std::string buf = line;
+    buf.push_back('\n');
+    const char* data = buf.c_str();
+    size_t left = buf.size();
+    while (left > 0) {
+#if defined(_WIN32)
+        int sent = ::send(static_cast<SOCKET>(sock_), data, static_cast<int>(left), 0);
+#else
+        ssize_t sent = ::send(sock_, data, left, 0);
+#endif
+        if (sent <= 0) return false;
+        left -= static_cast<size_t>(sent);
+        data += sent;
+    }
+    return true;
+}
+
+
+--------------------------------------------------
+
+TcpClient.h:
+------------
+#pragma once
+#include <string>
+#include <cstddef>
+
+// Cliente TCP muy simple (no Qt) para el runtime
+class TcpClient {
+public:
+    TcpClient();
+    ~TcpClient();
+
+    bool connectTo(const char* host, int port);
+    bool isConnected() const;
+    void close();
+
+    // Envía una línea y añade '\n'
+    bool sendLine(const std::string& line);
+
+private:
+    int sock_ = -1; // descriptor (SOCKET en Windows convertido a int)
+};
+
+
+--------------------------------------------------
+
+memprof_api.h:
+--------------
+#pragma once
+#include <cstddef>
+#include <new>      // std::nothrow_t, std::align_val_t (si hiciera falta)
+
+//
+// API C que expone el runtime (debe coincidir 1:1 con memprof_runtime.cpp)
+//
+extern "C" {
+    int  memprof_init(const char* host, int port);
+    void memprof_shutdown();
+
+    void memprof_record_alloc(void* ptr, std::size_t sz, const char* file, int line);
+    void memprof_record_free (void* ptr);
+}
+
+//
+// Placement new/new[] con (file,line). IMPORTANTE:
+//  - Estas OVERLOADS deben declararse ANTES de activar el macro `new`.
+//  - No meterlas dentro de extern "C".
+//
+inline void* operator new(std::size_t sz, const char* file, int line) {
+    void* p = ::operator new(sz);
+    memprof_record_alloc(p, sz, file ? file : "unknown", line);
+    return p;
+}
+inline void* operator new[](std::size_t sz, const char* file, int line) {
+    void* p = ::operator new[](sz);
+    memprof_record_alloc(p, sz, file ? file : "unknown", line);
+    return p;
+}
+// Estos deletes solo emparejan si el ctor lanza:
+inline void operator delete(void* p, const char*, int) noexcept { ::operator delete(p); }
+inline void operator delete[](void* p, const char*, int) noexcept { ::operator delete[](p); }
+
+//
+// Activar el wrapper SOLO al final, para no interferir con las declaraciones de arriba.
+// Asegúrate de incluir este header DESPUÉS de la STL en los TUs donde uses el wrapper.
+//
+#ifdef MEMPROF_WRAP_NEW
+#ifndef MEMPROF_WRAP_NEW_APPLIED
+#define MEMPROF_WRAP_NEW_APPLIED 1
+// No hagas #undef new aquí; normalmente no está definido aún.
+// A partir de este punto, cada `new` se reescribe como placement con (file,line).
+#define new new(__FILE__, __LINE__)
+#endif
+#endif
+
+
+--------------------------------------------------
+
+memprof_runtime.cpp:
+--------------------
+// src/lib/memprof_runtime.cpp
+#include <atomic>
+#include <thread>
+#include <chrono>
+#include <sstream>
+#include <iomanip>
+#include <vector>
+#include <unordered_map>
+#include <algorithm>
+#include <string>
+#include <cstdint>
+#include <cstddef>
+
+#include "MetricsAggregator.h"
+#include "TcpClient.h"
+
+// ---------------- Estado global ----------------
+static std::atomic<bool> g_running{false};
+static std::string       g_host   = "127.0.0.1";
+static int               g_port   = 7070;
+
+using steady_clock_t = std::chrono::steady_clock;
+static steady_clock_t::time_point g_start_tp;
+
+static MetricsAggregator g_agg;
+
+static inline uint64_t now_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               steady_clock_t::now().time_since_epoch()).count();
+}
+static inline uint64_t uptime_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               steady_clock_t::now() - g_start_tp).count();
+}
+static std::string ptr_to_hex(const void* p) {
+    std::ostringstream oss;
+    oss << "0x" << std::hex << std::uppercase
+        << std::setw(sizeof(void*)*2) << std::setfill('0')
+        << reinterpret_cast<std::uintptr_t>(p);
+    return oss.str();
+}
+
+// ========== API pública que invocan wrappers/overrides ==========
+extern "C" {
+
+void memprof_record_alloc(void* ptr, std::size_t sz, const char* file, int line) {
+    if (!ptr) return;
+    g_agg.onAlloc(
+        ptr_to_hex(ptr),
+        static_cast<uint64_t>(sz),
+        now_ns(),
+        file ? std::string(file) : std::string("unknown"),
+        line,
+        "global_new",
+        false /*is_array*/);
+}
+
+void memprof_record_free(void* ptr) {
+    if (!ptr) return;
+    g_agg.onFree(ptr_to_hex(ptr), /*hinted_size*/0);
+}
+
+int memprof_init(const char* host, int port) {
+    if (host && *host) g_host = host;
+    if (port > 0)      g_port = port;
+    g_start_tp = steady_clock_t::now();
+    g_running.store(true, std::memory_order_relaxed);
+
+    std::thread([]{
+        TcpClient client;
+
+        // --- Estado para tasas ---
+        uint64_t prev_total_allocs = 0;
+        uint64_t prev_active       = 0;
+        auto     prev_tp           = steady_clock_t::now();
+
+        while (g_running.load(std::memory_order_relaxed)) {
+            if (!client.isConnected()) {
+                client.close();
+                client.connectTo(g_host.c_str(), g_port);
+                if (!client.isConnected()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                    continue;
+                }
+            }
+
+            // ----- snapshot del agregador -----
+            const auto timeline = g_agg.getTimeline();
+            const auto blocks   = g_agg.getBlocks();
+            const auto perfile  = g_agg.getFileStats();
+
+            uint64_t heap_current = 0;
+            if (!timeline.empty()) heap_current = timeline.back().cur_bytes;
+            else for (const auto& b : blocks) heap_current += b.size;
+
+            uint64_t heap_peak = 0;
+            for (const auto& p : timeline) heap_peak = std::max(heap_peak, p.cur_bytes);
+
+            const uint64_t active_allocs = static_cast<uint64_t>(blocks.size());
+
+            MetricsAggregator::LeaksKPIs kpis = g_agg.getLeaksKPIs();
+
+            uint64_t total_allocs = 0;
+            for (const auto& kv : perfile) total_allocs += kv.second.alloc_count;
+
+            // --- Tasas alloc/free (aprox) ---
+            const auto now_tp = steady_clock_t::now();
+            const double dt_s = std::max(0.001,
+                std::chrono::duration_cast<std::chrono::duration<double>>(now_tp - prev_tp).count());
+
+            const int64_t d_allocs = (int64_t)total_allocs - (int64_t)prev_total_allocs;
+            const int64_t d_active = (int64_t)active_allocs - (int64_t)prev_active;
+            // frees ≈ allocs - delta(live)
+            const int64_t d_frees  = d_allocs - d_active;
+
+            const double alloc_rate = d_allocs > 0 ? (double)d_allocs / dt_s : 0.0;
+            const double free_rate  = d_frees  > 0 ? (double)d_frees  / dt_s : 0.0;
+
+            prev_total_allocs = total_allocs;
+            prev_active       = active_allocs;
+            prev_tp           = now_tp;
+
+            // bins (por tamaño)
+            struct Bin { uint64_t lo, hi, bytes, allocations; };
+            std::vector<uint64_t> edges;
+            for (uint64_t v = 1; v <= (1ull<<30); v <<= 1) edges.push_back(v);
+            edges.push_back(UINT64_C(1) << 62);
+            std::vector<Bin> bins(edges.size());
+            for (size_t i = 0; i < bins.size(); ++i) {
+                bins[i].lo = (i == 0 ? 0ULL : edges[i-1]);
+                bins[i].hi = edges[i];
+                bins[i].bytes = 0;
+                bins[i].allocations = 0;
+            }
+            auto pick_bin = [&](uint64_t sz)->size_t {
+                for (size_t i = 0; i < bins.size(); ++i)
+                    if (sz >= bins[i].lo && sz < bins[i].hi) return i;
+                return bins.size() - 1;
+            };
+            for (const auto& b : blocks) {
+                auto bi = pick_bin(b.size);
+                bins[bi].bytes += b.size;
+                bins[bi].allocations += 1;
+            }
+
+            // ----- JSON -----
+            std::ostringstream ss;
+            ss << '{';
+
+            // general + KPIs de fugas y tasas
+            ss << "\"general\":{"
+               << "\"uptime_ms\":"      << uptime_ms()      << ','
+               << "\"heap_current\":"   << heap_current     << ','
+               << "\"heap_peak\":"      << heap_peak        << ','
+               << "\"active_allocs\":"  << active_allocs    << ','
+               << "\"alloc_rate\":"     << alloc_rate       << ','
+               << "\"free_rate\":"      << free_rate        << ','
+               << "\"total_allocs\":"   << total_allocs     << ','
+               << "\"leak_bytes\":"     << kpis.total_leak_bytes << ','
+               << "\"leak_rate\":"      << kpis.leak_rate         << ','
+               << "\"largest_size\":"   << kpis.largest.size      << ','
+               << "\"largest_file\":\"" << kpis.largest.file      << "\","
+               << "\"top_file\":\""     << kpis.top_file_by_leaks.file   << "\","
+               << "\"top_file_count\":" << kpis.top_file_by_leaks.count  << ','
+               << "\"top_file_bytes\":" << kpis.top_file_by_leaks.bytes
+               << "},";
+
+            // per_file
+            ss << "\"per_file\":[";
+            bool first = true;
+            for (const auto& kv : perfile) {
+                const auto& file = kv.first;
+                const auto& fs   = kv.second;
+                const uint64_t frees = (fs.alloc_count >= fs.live_count)
+                                       ? (fs.alloc_count - fs.live_count) : 0ULL;
+                if (!first) ss << ',';
+                first = false;
+                ss << '{'
+                   << "\"file\":\""     << file << "\","
+                   << "\"totalBytes\":" << fs.alloc_bytes << ','
+                   << "\"allocs\":"     << fs.alloc_count << ','
+                   << "\"frees\":"      << frees          << ','
+                   << "\"netBytes\":"   << fs.live_bytes
+                   << '}';
+            }
+            ss << "],";
+
+            // bins
+            ss << "\"bins\":[";
+            for (size_t i = 0; i < bins.size(); ++i) {
+                if (i) ss << ',';
+                ss << '{'
+                   << "\"lo\":"          << bins[i].lo          << ','
+                   << "\"hi\":"          << bins[i].hi          << ','
+                   << "\"bytes\":"       << bins[i].bytes       << ','
+                   << "\"allocations\":" << bins[i].allocations
+                   << '}';
+            }
+            ss << "],";
+
+            // leaks (bloques vivos)
+            ss << "\"leaks\":[";
+            for (size_t i = 0; i < blocks.size(); ++i) {
+                if (i) ss << ',';
+                const auto& b = blocks[i];
+                ss << '{'
+                   << "\"ptr\":\""  << b.ptr  << "\","
+                   << "\"size\":"   << b.size << ','
+                   << "\"file\":\"" << b.file << "\","
+                   << "\"line\":"   << b.line << ','
+                   << "\"type\":\"" << b.type << "\","
+                   << "\"ts_ns\":"  << b.ts_ns
+                   << '}';
+            }
+            ss << "],";
+
+            // timeline: [t_ms, heap_bytes]
+            ss << "\"timeline\":[";
+            for (size_t i = 0; i < timeline.size(); ++i) {
+                if (i) ss << ',';
+                const auto& p = timeline[i];
+                const uint64_t t_ms = p.t_ns / 1'000'000ULL;
+                ss << '[' << t_ms << ',' << p.cur_bytes << ']';
+            }
+            ss << ']';
+
+            ss << '}';
+
+            client.sendLine(ss.str());
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+    }).detach();
+    return 0;
+}
+
+void memprof_shutdown() {
+    g_running.store(false, std::memory_order_relaxed);
+}
+
+} // extern "C"
+
+
+--------------------------------------------------
+
+main.cpp:
+---------
+// src/main.cpp
+#include <QApplication>
+#include "MainWindow.h"
+int main(int argc, char** argv) {
+    QApplication app(argc, argv);
+    MainWindow w; w.resize(1100, 720); w.show();
+    return app.exec();
+}
+
+
+--------------------------------------------------
+
+MetricsSnapshot.h:
+------------------
+#pragma once
+#include <QtGlobal>
+#include <QString>
+#include <QVector>
+
+// --- Rangos (para bins del Mapa de Memoria) ---
+struct BinRange {
+    qulonglong lo = 0;
+    qulonglong hi = 0;
+    qlonglong  bytes = 0;
+    int        allocations = 0;
+};
+
+// --- Estadísticas por archivo ---
+struct FileStat {
+    QString   file;
+    qlonglong totalBytes = 0;  // bytes acumulados en allocs
+    int       allocs = 0;      // cantidad de allocs
+    int       frees  = 0;      // cantidad de frees (estimada si no llega)
+    qlonglong netBytes = 0;    // bytes vivos (live)
+};
+
+// --- Item de bloque vivo (posibles fugas) ---
+struct LeakItem {
+    qulonglong ptr = 0;  // dirección (entero)
+    qlonglong  size = 0;
+    QString    file;
+    int        line = 0;
+    QString    type;
+    qulonglong ts_ns = 0; // timestamp de asignación
+};
+
+// --- Snapshot que consume la GUI ---
+struct MetricsSnapshot {
+    // General
+    qulonglong heapCurrent = 0;
+    qulonglong heapPeak    = 0;
+    qulonglong activeAllocs= 0;
+    qulonglong totalAllocs = 0;
+    qulonglong leakBytes   = 0;
+    double     allocRate   = 0.0;   // alloc/s (runtime)
+    double     freeRate    = 0.0;   // free/s  (runtime)
+    qulonglong uptimeMs    = 0;
+
+    // KPIs de fugas (runtime)
+    double     leakRate      = 0.0;       // leaks / total allocs
+    qulonglong largestLeakSz = 0;
+    QString    largestLeakFile;
+    QString    topLeakFile;
+    int        topLeakCount  = 0;
+    qulonglong topLeakBytes  = 0;
+
+    // Secciones
+    QVector<BinRange>  bins;
+    QVector<FileStat>  perFile;
+    QVector<LeakItem>  leaks;
+};
+
+
+--------------------------------------------------
+
+Reducers.cpp:
+-------------
+#include "Reducers.h"
+#include <algorithm>
+
+
+void MetricsReducer::onAlloc(quint64 ptr, qint64 size, const QString& file, int line, const QString& type, qint64 ts_ns) {
+std::scoped_lock lk(m_);
+live_[ptr] = AllocInfo{size, file, line, type, ts_ns};
+heapCurrent_ += size;
+heapPeak_ = std::max(heapPeak_, heapCurrent_);
+if (lastTsNsAlloc_ > 0) {
+double dt = (ts_ns - lastTsNsAlloc_) / 1e9; if (dt > 0) { double inst = 1.0 / dt; allocRate_ = 0.9*allocRate_ + 0.1*inst; }
+}
+lastTsNsAlloc_ = ts_ns;
+}
+
+
+void MetricsReducer::onFree(quint64 ptr, qint64 ts_ns) {
+std::scoped_lock lk(m_);
+auto it = live_.find(ptr);
+if (it != live_.end()) {
+heapCurrent_ -= it->second.size;
+live_.erase(it);
+}
+if (lastTsNsFree_ > 0) {
+double dt = (ts_ns - lastTsNsFree_) / 1e9; if (dt > 0) { double inst = 1.0 / dt; freeRate_ = 0.9*freeRate_ + 0.1*inst; }
+}
+lastTsNsFree_ = ts_ns;
+}
+
+
+void MetricsReducer::setAddressRange(quint64 lo, quint64 hi) { std::scoped_lock lk(m_); addrLo_ = lo; addrHi_ = hi; }
+void MetricsReducer::setBins(int nBins) { std::scoped_lock lk(m_); nBins_ = std::max(4, nBins); }
+
+
+MetricsSnapshot MetricsReducer::makeSnapshot(qint64 uptimeMs) {
+std::scoped_lock lk(m_);
+MetricsSnapshot s; s.heapCurrent = heapCurrent_; s.heapPeak = heapPeak_;
+s.allocRate = allocRate_; s.freeRate = freeRate_; s.uptimeMs = uptimeMs; s.capturedAt = QDateTime::currentDateTime();
+// Construir bins (distribución por rango de direcciones)
+s.bins.clear(); s.bins.reserve(nBins_);
+if (addrHi_ > addrLo_ && nBins_ > 0) {
+const long double span = (long double)addrHi_ - (long double)addrLo_;
+for (int i=0;i<nBins_;++i){
+quint64 lo = addrLo_ + (quint64)((span * i)/nBins_);
+quint64 hi = addrLo_ + (quint64)((span * (i+1))/nBins_);
+s.bins.push_back({lo,hi,0,0});
+}
+for (const auto& kv : live_) {
+quint64 p = kv.first; const auto& info = kv.second;
+if (p < addrLo_ || p >= addrHi_) continue;
+int idx = (int)(((long double)(p - addrLo_) / (long double)(addrHi_ - addrLo_)) * nBins_);
+if (idx < 0) idx = 0; if (idx >= nBins_) idx = nBins_-1;
+s.bins[idx].bytes += info.size; s.bins[idx].allocations += 1;
+}
+}
+// Por archivo y leaks
+QHash<QString, FileStat> acc;
+for (const auto& kv : live_) {
+const auto& a = kv.second;
+auto &fs = acc[a.file]; fs.file = a.file; fs.totalBytes += a.size; fs.allocs += 1; fs.netBytes += a.size;
+}
+s.perFile.reserve(acc.size());
+for (auto it = acc.begin(); it != acc.end(); ++it) s.perFile.push_back(it.value());
+s.leaks.reserve(live_.size());
+for (const auto& kv : live_) {
+const auto& a = kv.second;
+s.leaks.push_back({kv.first, a.size, a.file, a.line, a.type, a.ts_ns});
+}
+return s;
+}
+
+--------------------------------------------------
+
+Reducers.h:
+-----------
+#pragma once
+#include "MetricsSnapshot.h"
+#include <unordered_map>
+#include <vector>
+#include <mutex>
+
+
+// Acumula eventos incrementales y produce un MetricsSnapshot
+class MetricsReducer {
+public:
+    void onAlloc(quint64 ptr, qint64 size, const QString& file, int line, const QString& type, qint64 ts_ns);
+    void onFree(quint64 ptr, qint64 ts_ns);
+    void setAddressRange(quint64 lo, quint64 hi); // para mapa de memoria
+    void setBins(int nBins);
+    MetricsSnapshot makeSnapshot(qint64 uptimeMs);
+private:
+    struct AllocInfo { qint64 size; QString file; int line; QString type; qint64 ts_ns; };
+    std::unordered_map<quint64, AllocInfo> live_;
+    qint64 heapCurrent_ = 0;
+    qint64 heapPeak_ = 0;
+    double allocRate_ = 0.0, freeRate_ = 0.0; // EWMA sencilla
+    quint64 addrLo_ = 0, addrHi_ = 0;
+    int nBins_ = 64;
+    qint64 lastTsNsAlloc_ = 0, lastTsNsFree_ = 0; // para tasa
+    std::mutex m_;
+};
+
+--------------------------------------------------
+
+TableModels.cpp:
+----------------
+#include "TableModels.h"
+#include <QString>
+
+// ==================== LeaksModel ====================
+LeaksModel::LeaksModel(QObject* parent) : QAbstractTableModel(parent) {}
+
+int LeaksModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : rows_.size();
+}
+
+int LeaksModel::columnCount(const QModelIndex& parent) const {
+    Q_UNUSED(parent);
+    return 6; // ptr, size, file, line, type, ts_ns
+}
+
+QVariant LeaksModel::headerData(int section, Qt::Orientation orientation, int role) const {
+    if (role != Qt::DisplayRole) return {};
+    if (orientation == Qt::Horizontal) {
+        switch (section) {
+            case 0: return "Ptr";
+            case 1: return "Size (B)";
+            case 2: return "File";
+            case 3: return "Line";
+            case 4: return "Type";
+            case 5: return "ts_ns";
+        }
+    }
+    return {};
+}
+
+QVariant LeaksModel::data(const QModelIndex& index, int role) const {
+    if (!index.isValid() || index.row() >= rows_.size()) return {};
+    const auto& it = rows_[index.row()];
+    if (role == Qt::DisplayRole) {
+        switch (index.column()) {
+            case 0: return QString("0x%1").arg(QString::number(it.ptr, 16));
+            case 1: return it.size;
+            case 2: return it.file;
+            case 3: return it.line;
+            case 4: return it.type;
+            case 5: return QString::number(it.ts_ns);
+        }
+    }
+    return {};
+}
+
+void LeaksModel::setDataSet(const QVector<LeakItem>& v) {
+    beginResetModel();
+    rows_ = v;
+    endResetModel();
+}
+
+LeakItem LeaksModel::itemAt(int row) const {
+    return (row >= 0 && row < rows_.size()) ? rows_[row] : LeakItem{};
+}
+
+// ==================== PerFileModel ====================
+PerFileModel::PerFileModel(QObject* parent) : QAbstractTableModel(parent) {}
+
+int PerFileModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : rows_.size();
+}
+
+int PerFileModel::columnCount(const QModelIndex& parent) const {
+    Q_UNUSED(parent);
+    return 5; // Archivo | Total [B] | Allocs | Frees | Net [B]
+}
+
+QVariant PerFileModel::headerData(int section, Qt::Orientation orientation, int role) const {
+    if (role != Qt::DisplayRole) return {};
+    if (orientation == Qt::Horizontal) {
+        switch (section) {
+            case 0: return "Archivo";
+            case 1: return "Total [B]";
+            case 2: return "Allocs";
+            case 3: return "Frees";
+            case 4: return "Net [B]";
+        }
+    }
+    return {};
+}
+
+QVariant PerFileModel::data(const QModelIndex& index, int role) const {
+    if (!index.isValid() || index.row() >= rows_.size()) return {};
+    const auto& it = rows_[index.row()];
+    if (role == Qt::DisplayRole) {
+        switch (index.column()) {
+            case 0: return it.file;
+            case 1: return it.totalBytes;
+            case 2: return it.allocs;
+            case 3: return it.frees;
+            case 4: return it.netBytes;
+        }
+    }
+    return {};
+}
+
+void PerFileModel::setDataSet(const QVector<FileStat>& v) {
+    beginResetModel();
+    rows_ = v;
+    endResetModel();
+}
+
+const QVector<FileStat>& PerFileModel::items() const {
+    return rows_;
+}
+
+
+--------------------------------------------------
+
+TableModels.h:
+--------------
+#pragma once
+#include <QAbstractTableModel>
+#include <QVector>
+#include "MetricsSnapshot.h"
+
+// -------------------- LeaksModel --------------------
+class LeaksModel : public QAbstractTableModel {
+    Q_OBJECT
+public:
+    explicit LeaksModel(QObject* parent=nullptr);
+
+    int rowCount(const QModelIndex& parent = QModelIndex()) const override;
+    int columnCount(const QModelIndex& parent = QModelIndex()) const override;
+    QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
+    QVariant data(const QModelIndex& index, int role) const override;
+
+    void setDataSet(const QVector<LeakItem>& v);
+    LeakItem itemAt(int row) const;
+
+private:
+    QVector<LeakItem> rows_;
+};
+
+// -------------------- PerFileModel --------------------
+class PerFileModel : public QAbstractTableModel {
+    Q_OBJECT
+public:
+    explicit PerFileModel(QObject* parent=nullptr);
+
+    int rowCount(const QModelIndex& parent = QModelIndex()) const override;
+    int columnCount(const QModelIndex& parent = QModelIndex()) const override;
+    QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
+    QVariant data(const QModelIndex& index, int role) const override;
+
+    void setDataSet(const QVector<FileStat>& v);
+    const QVector<FileStat>& items() const;
+
+private:
+    QVector<FileStat> rows_;
+};
+
+
+--------------------------------------------------
+
+ServerWorker.cpp:
+-----------------
+// src/net/ServerWorker.cpp
+#include "net/ServerWorker.h"
+
+#include <QJsonDocument>
+#include <QJsonValue>
+#include <QJsonArray>
+#include <QAbstractSocket>
+#include <QDebug>
+
+ServerWorker::ServerWorker(QObject* p)
+    : QObject(p),
+      srv_(new QTcpServer(this)) {
+    connect(srv_, &QTcpServer::newConnection, this, &ServerWorker::onNewConnection);
+}
+
+ServerWorker::~ServerWorker() {
+    stop();
+}
+
+bool ServerWorker::listen(const QHostAddress& addr, quint16 port) {
+    if (srv_->isListening())
+        srv_->close();
+
+    const bool ok = srv_->listen(addr, port);
+    emit status(ok
+                ? QString("Servidor escuchando en %1:%2")
+                      .arg(srv_->serverAddress().toString())
+                      .arg(srv_->serverPort())
+                : QString("Fallo al escuchar: %1").arg(srv_->errorString()));
+    qDebug() << "[ServerWorker] listen:" << ok
+             << "addr=" << addr.toString()
+             << "port=" << port;
+    return ok;
+}
+
+void ServerWorker::stop() {
+    if (cli_) {
+        cli_->disconnect(this);
+        cli_->disconnectFromHost();
+        cli_->deleteLater();
+        cli_ = nullptr;
+    }
+    if (srv_->isListening())
+        srv_->close();
+}
+
+void ServerWorker::onNewConnection() {
+    QTcpSocket* s = srv_->nextPendingConnection();
+    if (!s) return;
+
+    if (cli_) {
+        disconnect(cli_, nullptr, this, nullptr);
+        cli_->disconnectFromHost();
+        cli_->deleteLater();
+        cli_ = nullptr;
+    }
+
+    cli_ = s;
+    connect(cli_, &QTcpSocket::readyRead,    this, &ServerWorker::onReadyRead);
+    connect(cli_, &QTcpSocket::disconnected, this, &ServerWorker::onDisconnected);
+
+    emit status(QString("Cliente conectado desde %1:%2")
+                .arg(cli_->peerAddress().toString())
+                .arg(cli_->peerPort()));
+    qDebug() << "[ServerWorker] client connected"
+             << cli_->peerAddress().toString()
+             << cli_->peerPort();
+}
+
+void ServerWorker::onReadyRead() {
+    if (!cli_) return;
+    buf_.append(cli_->readAll());
+
+    for (;;) {
+        const int idx = buf_.indexOf('\n');
+        if (idx < 0) break;
+        QByteArray line = buf_.left(idx);
+        buf_.remove(0, idx + 1);
+        processLine(line.trimmed());
+    }
+}
+
+void ServerWorker::onDisconnected() {
+    emit status("Cliente desconectado");
+    qDebug() << "[ServerWorker] client disconnected";
+    if (cli_) {
+        cli_->deleteLater();
+        cli_ = nullptr;
+    }
+}
+
+void ServerWorker::processLine(const QByteArray& line) {
+    if (line.isEmpty()) return;
+
+    QJsonParseError pe{};
+    const QJsonDocument doc = QJsonDocument::fromJson(line, &pe);
+    if (pe.error != QJsonParseError::NoError || !doc.isObject()) {
+        qDebug() << "[ServerWorker] JSON inválido:" << pe.errorString()
+                 << "first120=" << QString::fromUtf8(line.left(120));
+        return;
+    }
+    parseSnapshotJson(doc.object());
+}
+
+// -------------------------------
+// JSON → MetricsSnapshot
+// -------------------------------
+namespace {
+static bool parseHexPtrToU64(const QString& s, quint64& out) {
+    bool ok = false;
+    const QString t = s.trimmed();
+    if (t.startsWith("0x", Qt::CaseInsensitive)) {
+        out = t.mid(2).toULongLong(&ok, 16);
+    } else {
+        out = t.toULongLong(&ok, 10);
+    }
+    return ok;
+}
+} // namespace
+
+void ServerWorker::parseSnapshotJson(const QJsonObject& o) {
+    // 1) GENERAL
+    const QJsonObject g = o.value("general").toObject();
+    if (g.isEmpty()) {
+        qDebug() << "[ServerWorker] JSON sin 'general'";
+        return;
+    }
+
+    MetricsSnapshot s{};
+    s.heapCurrent  = static_cast<qulonglong>(g.value("heap_current").toDouble(0));
+    s.heapPeak     = static_cast<qulonglong>(g.value("heap_peak").toDouble(0));
+    s.allocRate    = g.value("alloc_rate").toDouble(0.0);
+    s.freeRate     = g.value("free_rate").toDouble(0.0);
+    s.uptimeMs     = static_cast<qulonglong>(g.value("uptime_ms").toDouble(0));
+    s.activeAllocs = static_cast<qulonglong>(g.value("active_allocs").toDouble(0));
+    s.totalAllocs  = static_cast<qulonglong>(g.value("total_allocs").toDouble(0));
+    s.leakBytes    = static_cast<qulonglong>(g.value("leak_bytes").toDouble(0));
+
+    // KPIs de fugas (opcionales)
+    s.leakRate       = g.value("leak_rate").toDouble(0.0);
+    s.largestLeakSz  = static_cast<qulonglong>(g.value("largest_size").toDouble(0));
+    s.largestLeakFile= g.value("largest_file").toString();
+    s.topLeakFile    = g.value("top_file").toString();
+    s.topLeakCount   = g.value("top_file_count").toInt(0);
+    s.topLeakBytes   = static_cast<qulonglong>(g.value("top_file_bytes").toDouble(0));
+
+    // 2) BINS
+    s.bins.clear();
+    const QJsonArray bins = o.value("bins").toArray();
+    s.bins.reserve(bins.size());
+    for (const QJsonValue& v : bins) {
+        const QJsonObject b = v.toObject();
+        BinRange br;
+        br.lo          = static_cast<qulonglong>(b.value("lo").toDouble(0));
+        br.hi          = static_cast<qulonglong>(b.value("hi").toDouble(0));
+        br.bytes       = static_cast<qlonglong>(b.value("bytes").toDouble(0));
+        br.allocations = b.value("allocations").toInt(0);
+        s.bins.push_back(br);
+    }
+
+    // 3) PER FILE
+    s.perFile.clear();
+    const QJsonArray perFile = o.value("per_file").toArray();
+    s.perFile.reserve(perFile.size());
+    for (const QJsonValue& v : perFile) {
+        const QJsonObject pf = v.toObject();
+        FileStat fs;
+        fs.file       = pf.value("file").toString();
+        fs.totalBytes = static_cast<qlonglong>(pf.value("totalBytes").toDouble(0));
+        fs.allocs     = pf.value("allocs").toInt(0);
+        fs.frees      = pf.value("frees").toInt(0);
+        fs.netBytes   = static_cast<qlonglong>(pf.value("netBytes").toDouble(0));
+        s.perFile.push_back(fs);
+    }
+
+    // 4) LEAKS (bloques vivos)
+    s.leaks.clear();
+    const QJsonArray leaks = o.value("leaks").toArray();
+    s.leaks.reserve(leaks.size());
+    for (const QJsonValue& v : leaks) {
+        const QJsonObject L = v.toObject();
+        LeakItem li;
+        const QJsonValue jp = L.value("ptr");
+        if (jp.isString()) {
+            quint64 ptrVal = 0;
+            if (parseHexPtrToU64(jp.toString(), ptrVal)) li.ptr = ptrVal;
+        } else if (jp.isDouble()) {
+            li.ptr = static_cast<qulonglong>(jp.toDouble(0));
+        }
+        li.size  = static_cast<qlonglong>(L.value("size").toDouble(0));
+        li.file  = L.value("file").toString();
+        li.line  = L.value("line").toInt(0);
+        li.type  = L.value("type").toString();
+        li.ts_ns = static_cast<qulonglong>(L.value("ts_ns").toDouble(0));
+        s.leaks.push_back(li);
+    }
+
+    qDebug() << "[ServerWorker] snapshot:"
+             << "cur=" << s.heapCurrent
+             << "peak=" << s.heapPeak
+             << "active=" << s.activeAllocs
+             << "total=" << s.totalAllocs
+             << "leakB=" << s.leakBytes
+             << "alloc/s=" << s.allocRate
+             << "free/s=" << s.freeRate
+             << "bins=" << s.bins.size()
+             << "perFile=" << s.perFile.size()
+             << "leaks=" << s.leaks.size();
+
+    emit snapshotReady(s);
+}
+
+
+--------------------------------------------------
+
+ServerWorker.h:
+---------------
+#pragma once
+#include <QObject>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QHostAddress>
+#include <QByteArray>
+#include <QJsonObject>
+#include <QString>
+
+#include "model/MetricsSnapshot.h"
+
+class ServerWorker : public QObject {
+    Q_OBJECT
+public:
+    explicit ServerWorker(QObject* parent = nullptr);
+    ~ServerWorker() override;
+
+    bool listen(const QHostAddress& addr, quint16 port);
+    void stop();
+
+    signals:
+        void status(const QString& text);
+    void snapshotReady(const MetricsSnapshot& s);
+
+private slots:
+    void onNewConnection();
+    void onReadyRead();
+    void onDisconnected();
+
+private:
+    void processLine(const QByteArray& line);
+    void parseSnapshotJson(const QJsonObject& o);
+
+private:
+    QTcpServer*  srv_ = nullptr;
+    QTcpSocket*  cli_ = nullptr;
+    QByteArray   buf_;
+};
+
+
+--------------------------------------------------
+
+GeneralTab.cpp:
+---------------
+#include "GeneralTab.h"
+#include "model/MetricsSnapshot.h"
+
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QAbstractItemView>
+#include <QtMath>
+#include <algorithm>
+
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+using namespace QtCharts; // Qt5
+#endif
+
+namespace {
+static inline QString bytesToHuman(qint64 b) {
+  if (b < 1024) return QString::number(b) + " B";
+  double kb = b / 1024.0; if (kb < 1024.0) return QString::number(kb, 'f', 1) + " KB";
+  double mb = kb / 1024.0; if (mb < 1024.0) return QString::number(mb, 'f', 1) + " MB";
+  double gb = mb / 1024.0; return QString::number(gb, 'f', 2) + " GB";
+}
+} // namespace
+
+GeneralTab::GeneralTab(QWidget* parent) : QWidget(parent) {
+  auto* root = new QVBoxLayout(this);
+
+  // ----- Métricas arriba -----
+  heapCur_      = new QLabel("Heap actual: 0 B");
+  heapPeak_     = new QLabel("Pico: 0 B");
+  activeAllocs_ = new QLabel("Activas: 0");
+  leakMb_       = new QLabel("Leaks: 0 MB");
+  totalAllocs_  = new QLabel("Total allocs: 0");
+
+  auto* topRow = new QHBoxLayout;
+  topRow->addWidget(heapCur_);
+  topRow->addWidget(heapPeak_);
+  topRow->addWidget(activeAllocs_);
+  topRow->addWidget(leakMb_);
+  topRow->addWidget(totalAllocs_);
+  topRow->addStretch(1);
+  root->addLayout(topRow);
+
+  // ================= Memoria vs tiempo (MB) =================
+  // ÚNICA serie y sin OpenGL para evitar artefactos de doble trazo
+  memSeries_ = new QLineSeries();
+  // memSeries_->setUseOpenGL(true); // <- DESACTIVADO a propósito
+
+  memChart_ = new QChart();
+  memChart_->legend()->hide();
+  memChart_->addSeries(memSeries_);
+
+  axX_mem_ = new QValueAxis();
+  axX_mem_->setTitleText("t (s)");
+  axX_mem_->setRange(0.0, 60.0);
+
+  axY_mem_ = new QValueAxis();
+  axY_mem_->setTitleText("MB");
+  axY_mem_->setRange(0.0, 1.0);
+
+  memChart_->addAxis(axX_mem_, Qt::AlignBottom);
+  memChart_->addAxis(axY_mem_, Qt::AlignLeft);
+  memSeries_->attachAxis(axX_mem_);
+  memSeries_->attachAxis(axY_mem_);
+
+  memChartView_ = new QChartView(memChart_);
+  memChartView_->setRenderHint(QPainter::Antialiasing);
+  root->addWidget(memChartView_);
+
+
+
+  // ----- Top-3 por archivo -----
+  top3_ = new QTableWidget(3, 3, this);
+  QStringList headers; headers << "Archivo" << "Allocs" << "MB";
+  top3_->setHorizontalHeaderLabels(headers);
+  top3_->verticalHeader()->setVisible(false);
+  top3_->horizontalHeader()->setStretchLastSection(true);
+  top3_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  top3_->setSelectionMode(QAbstractItemView::NoSelection);
+  root->addWidget(top3_);
+}
+
+void GeneralTab::updateSnapshot(const MetricsSnapshot& s) {
+  // ----- Etiquetas principales -----
+  heapCur_->setText(QString("Heap actual: %1").arg(bytesToHuman(s.heapCurrent)));
+  heapPeak_->setText(QString("Pico: %1").arg(bytesToHuman(s.heapPeak)));
+
+  // Calcular métricas si no vinieran en el snapshot
+  qint64 leakBytes = s.leakBytes;
+  if (leakBytes <= 0) {
+    for (const auto& L : s.leaks) leakBytes += L.size;
+  }
+
+  qint64 totalAllocs = s.totalAllocs;
+  qint64 activeAllocs = s.activeAllocs;
+  if (totalAllocs <= 0 || activeAllocs <= 0) {
+    qint64 total = 0, act = 0;
+    for (const auto& f : s.perFile) {
+      total += f.allocs;
+      act   += (f.allocs - f.frees);
+    }
+    if (totalAllocs <= 0)  totalAllocs  = total;
+    if (activeAllocs <= 0) activeAllocs = act;
+  }
+
+  activeAllocs_->setText(QString("Activas: %1").arg(activeAllocs));
+  leakMb_->setText(QString("Leaks: %1 MB").arg(leakBytes / (1024.0 * 1024.0), 0, 'f', 2));
+  totalAllocs_->setText(QString("Total allocs: %1").arg(totalAllocs));
+
+  // ----- Serie Memoria vs tiempo (MB) -----
+  double nextX = (s.uptimeMs > 0) ? (s.uptimeMs / 1000.0) : (t_ + 0.25);
+  if (nextX <= t_) nextX = t_ + 0.25;
+  t_ = nextX;
+
+  const double memMB = s.heapCurrent / (1024.0 * 1024.0);
+  memSeries_->append(t_, memMB);
+
+  // Ventana ~120 s
+  const double WINDOW_S = 120.0;
+  while (memSeries_->count() > 0 && memSeries_->at(0).x() < t_ - WINDOW_S) {
+    memSeries_->removePoints(0, 1);
+  }
+
+  // Actualizar ejes usando punteros persistentes (sin buscar en el chart)
+  axX_mem_->setRange(std::max(0.0, t_ - WINDOW_S), t_);
+  axY_mem_->setRange(0.0, std::max(axY_mem_->max(), std::max(1.0, memMB * 1.2)));
+
+
+  // ----- Top-3 por archivo -----
+  struct R { QString file; int allocs; qint64 bytes; };
+  std::vector<R> rows; rows.reserve(s.perFile.size());
+  for (const auto& f : s.perFile) rows.push_back({f.file, f.allocs, f.netBytes});
+  std::sort(rows.begin(), rows.end(), [](const R& a, const R& b){
+    if (a.bytes != b.bytes) return a.bytes > b.bytes;
+    return a.allocs > b.allocs;
+  });
+  const int N = std::min<int>(3, (int)rows.size());
+  top3_->clearContents();
+  top3_->setRowCount(N);
+  for (int i=0;i<N;++i) {
+    top3_->setItem(i, 0, new QTableWidgetItem(rows[i].file));
+    top3_->setItem(i, 1, new QTableWidgetItem(QString::number(rows[i].allocs)));
+    top3_->setItem(i, 2, new QTableWidgetItem(bytesToHuman(rows[i].bytes)));
+  }
+}
+
+
+--------------------------------------------------
+
+GeneralTab.h:
+-------------
+#pragma once
+#include <QWidget>
+
+#include <QtCharts/QChart>
+#include <QtCharts/QChartView>
+#include <QtCharts/QLineSeries>
+#include <QtCharts/QValueAxis>
+
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+  #include <QtCharts/QChartGlobal>
+  QT_CHARTS_USE_NAMESPACE
+#endif
+
+class QLabel;
+class QTableWidget;
+struct MetricsSnapshot;
+
+class GeneralTab : public QWidget {
+    Q_OBJECT
+  public:
+    explicit GeneralTab(QWidget* parent=nullptr);
+    void updateSnapshot(const MetricsSnapshot& s);
+
+private:
+    // --- KPIs de cabecera ---
+    QLabel* heapCur_       = nullptr;
+    QLabel* heapPeak_      = nullptr;
+    QLabel* activeAllocs_  = nullptr;
+    QLabel* leakMb_        = nullptr;
+    QLabel* totalAllocs_   = nullptr;
+
+
+    // --- Memoria vs tiempo (MB) — corregido para evitar doble trazo ---
+    QChartView*  memChartView_ = nullptr;   // vista
+    QChart*      memChart_     = nullptr;   // chart real
+    QLineSeries* memSeries_    = nullptr;   // ÚNICA serie
+    QValueAxis*  axX_mem_      = nullptr;   // eje X persistente
+    QValueAxis*  axY_mem_      = nullptr;   // eje Y persistente
+
+    // Top 3 por archivo (archivo | allocs | MB)
+    QTableWidget* top3_ = nullptr;
+
+    double t_ = 0.0; // tiempo en segundos para la serie
+};
+
+
+--------------------------------------------------
+
+LeaksTab.cpp:
+-------------
+#include "LeaksTab.h"
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QTableView>
+#include <QHeaderView>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QClipboard>
+#include <QApplication>
+#include <QLabel>
+#include <QDateTime>
+#include <QValueAxis>
+#include <QFileInfo>
+#include <QDir>
+#include <QUrl>
+#include <QRegularExpression>
+
+LeaksTab::LeaksTab(QWidget* parent): QWidget(parent) {
+    auto* root = new QVBoxLayout(this);
+
+    // --- Resumen KPIs ---
+    auto* kpiRow = new QHBoxLayout();
+    leakTotalLbl_ = new QLabel("Total fugado: 0 MB");
+    largestLbl_   = new QLabel("Leak mayor: —");
+    topFileLbl_   = new QLabel("Archivo top: —");
+    leakRateLbl_  = new QLabel("Leak rate: 0.0%");
+    kpiRow->addWidget(leakTotalLbl_);
+    kpiRow->addWidget(largestLbl_);
+    kpiRow->addWidget(topFileLbl_);
+    kpiRow->addWidget(leakRateLbl_);
+    kpiRow->addStretch(1);
+    root->addLayout(kpiRow);
+
+    // --- Filtro + copiar ---
+    auto* row = new QHBoxLayout(); root->addLayout(row);
+    filterEdit_ = new QLineEdit(); filterEdit_->setPlaceholderText("Filtrar por archivo/tipo…"); row->addWidget(filterEdit_);
+    copyBtn_ = new QPushButton("Copiar selección"); row->addWidget(copyBtn_);
+
+    // --- Tabla ---
+    model_ = new LeaksModel(this);
+    proxy_ = new QSortFilterProxyModel(this);
+    proxy_->setSourceModel(model_);
+    proxy_->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    proxy_->setFilterKeyColumn(-1); // todo el row
+    table_ = new QTableView(this);
+    table_->setModel(proxy_);
+    table_->setSortingEnabled(true);
+    table_->horizontalHeader()->setStretchLastSection(true);
+    table_->verticalHeader()->setVisible(false);
+    table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    root->addWidget(table_);
+
+    connect(filterEdit_, &QLineEdit::textChanged, proxy_, &QSortFilterProxyModel::setFilterFixedString);
+    connect(copyBtn_, &QPushButton::clicked, this, &LeaksTab::onCopySelected);
+
+    // --- Charts: barras, pastel, temporal ---
+    barsView_ = new QChartView(new QChart());
+    pieView_  = new QChartView(new QChart());
+    timeView_ = new QChartView(new QChart());
+    barsView_->setRenderHint(QPainter::Antialiasing);
+    pieView_->setRenderHint(QPainter::Antialiasing);
+    timeView_->setRenderHint(QPainter::Antialiasing);
+
+    auto* chartsRow = new QHBoxLayout();
+    chartsRow->addWidget(barsView_, 2);
+    chartsRow->addWidget(pieView_, 2);
+    chartsRow->addWidget(timeView_, 3);
+    root->addLayout(chartsRow);
+}
+
+void LeaksTab::updateSnapshot(const MetricsSnapshot& s) {
+    model_->setDataSet(s.leaks);
+
+    // ----- Preferir KPIs del snapshot (runtime); fallback si no vienen -----
+    double leak_mb = s.leakBytes / (1024.0*1024.0);
+    leakTotalLbl_->setText(QString("Total fugado: %1 MB").arg(leak_mb, 0, 'f', 2));
+
+    if (s.largestLeakSz > 0) {
+        largestLbl_->setText(QString("Leak mayor: %1 (%2 B)").arg(s.largestLeakFile).arg(s.largestLeakSz));
+    } else {
+        // fallback (cálculo local)
+        qint64 max_sz = 0; QString max_file = "—";
+        const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+        for (const auto& L : s.leaks) {
+            const qint64 age_ms = now_ms - (qint64)(L.ts_ns / 1000000ULL);
+            if (age_ms >= 3000 && L.size > max_sz) { max_sz = L.size; max_file = L.file; }
+        }
+        largestLbl_->setText(QString("Leak mayor: %1 (%2 B)").arg(max_file).arg(max_sz));
+    }
+
+    if (!s.topLeakFile.isEmpty()) {
+        topFileLbl_->setText(QString("Archivo top: %1 (%2 leaks, %3 B)")
+                             .arg(s.topLeakFile).arg(s.topLeakCount).arg(s.topLeakBytes));
+    } else {
+        // fallback local por frecuencia
+        QHash<QString, QPair<qint64,int>> byFile;
+        const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+        for (const auto& L : s.leaks) {
+            const qint64 age_ms = now_ms - (qint64)(L.ts_ns / 1000000ULL);
+            if (age_ms >= 3000) {
+                auto& ref = byFile[L.file]; ref.first += L.size; ref.second += 1;
+            }
+        }
+        QString topf="—"; int cnt=0; qint64 bytes=0;
+        for (auto it = byFile.begin(); it != byFile.end(); ++it) {
+            if (it.value().second > cnt || (it.value().second == cnt && it.value().first > bytes)) {
+                topf = it.key(); cnt = it.value().second; bytes = it.value().first;
+            }
+        }
+        topFileLbl_->setText(QString("Archivo top: %1 (%2 leaks, %3 B)").arg(topf).arg(cnt).arg(bytes));
+    }
+
+    const double rate = (s.leakRate > 0.0) ? (100.0 * s.leakRate) : 0.0;
+    leakRateLbl_->setText(QString("Leak rate: %1%").arg(rate, 0, 'f', 2));
+
+    // ----- Gráficas -----
+    rebuildCharts(s);
+}
+
+void LeaksTab::rebuildCharts(const MetricsSnapshot& s) {
+    const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+    const qint64 THR_MS = 3000;
+
+    // --- Helper: obtener una "clave" legible y consistente por archivo ---
+        // --- Helper: obtener una "clave" legible y consistente por archivo ---
+    auto toNiceFileKey = [](const QString& raw) -> QString {
+        // 1) Decodificar percent-encoding
+        QString dec = QUrl::fromPercentEncoding(raw.toUtf8());
+
+        // 2) Normalizar separadores
+        QString norm = dec;
+        norm.replace("\\", "/");
+        norm.replace("%2F", "/");
+        norm.replace("%5C", "/");
+
+        // 3) Intentar basename convencional
+        QString base = QFileInfo(norm).fileName();
+        auto isGood = [](const QString& s) {
+            return !s.isEmpty() && s.contains('.');
+        };
+        if (isGood(base)) return base;
+
+        // 4) Recuperar basename desde una cadena "aplanada"
+        //    (sin separadores) buscando la extensión al final.
+        static const QStringList exts = {"cpp","cxx","cc","c","hpp","hh","h"};
+        int bestPos = -1;
+        QString bestExt;
+        bool bestHadDot = false;
+
+        for (const auto& ext : exts) {
+            const QString dotExt = "." + ext;
+
+            int pDot = norm.lastIndexOf(dotExt, -1, Qt::CaseInsensitive); // "...alloc_a.cpp"
+            if (pDot >= 0 && pDot > bestPos) {
+                bestPos = pDot;
+                bestExt = ext;
+                bestHadDot = true;
+            }
+            int pPlain = norm.lastIndexOf(ext, -1, Qt::CaseInsensitive);  // "...alloc_acpp" (aplanado)
+            if (pPlain >= 0 && pPlain > bestPos) {
+                bestPos = pPlain;
+                bestExt = ext;
+                bestHadDot = false;
+            }
+        }
+
+        if (bestPos >= 0) {
+            // end: posición tras la extensión
+            int end = bestPos + (bestHadDot ? 1 : 0) + bestExt.size();
+
+            // start: retroceder hasta el primer no [A-Za-z0-9._-]
+            int start = bestPos - 1;
+            auto isOkCh = [](QChar ch) {
+                return ch.isLetterOrNumber() || ch == '_' || ch == '-' || ch == '.';
+            };
+            while (start >= 0 && isOkCh(norm[start])) --start;
+            ++start;
+
+            QString name = norm.mid(start, end - start);
+
+            // Si venía sin punto antes de la extensión, insértalo para mostrarse bien.
+            if (!bestHadDot && name.size() > bestExt.size()
+                && name.right(bestExt.size()) == bestExt) {
+                name.insert(name.size() - bestExt.size(), ".");
+            }
+
+            if (isGood(name)) return name;
+        }
+
+        // 5) Último recurso: devolver una versión acortada para que no rompa la UI
+        if (norm.size() > 40) return norm.left(20) + "…" + norm.right(15);
+        return norm;
+    };
+
+    // --- Agrupar por archivo (basename) solo para fugas "confirmadas" (edad >= THR_MS) ---
+    QHash<QString, qint64> bytesByKey;
+    qint64 tmin_detect = LLONG_MAX, tmax_detect = 0;
+
+    for (const auto& L : s.leaks) {
+        const qint64 ts_ms = static_cast<qint64>(L.ts_ns / 1000000ULL);
+        if (now_ms - ts_ms >= THR_MS) {
+            const QString key = toNiceFileKey(L.file);
+            bytesByKey[key] += L.size;
+
+            const qint64 det_ms = ts_ms + THR_MS;
+            if (det_ms < tmin_detect) tmin_detect = det_ms;
+            if (det_ms > tmax_detect) tmax_detect = det_ms;
+        }
+    }
+    if (tmin_detect == LLONG_MAX) tmin_detect = now_ms;
+    if (tmax_detect < tmin_detect) tmax_detect = tmin_detect + 1;
+
+    // --- Ordenar por bytes y construir Top-N + "Otros" ---
+    QList<QPair<QString, qint64>> items;
+    items.reserve(bytesByKey.size());
+    for (auto it = bytesByKey.begin(); it != bytesByKey.end(); ++it) {
+        items.append({it.key(), it.value()});
+    }
+    std::sort(items.begin(), items.end(),
+              [](const QPair<QString,qint64>& a, const QPair<QString,qint64>& b){
+                  return a.second > b.second;
+              });
+
+    const int TOPN = 8;
+    QStringList cats;
+    auto* set = new QBarSet("bytes");
+    qint64 othersBytes = 0;
+
+    for (int i = 0; i < items.size(); ++i) {
+        if (i < TOPN) {
+            cats << items[i].first;
+            *set << static_cast<double>(items[i].second);
+        } else {
+            othersBytes += items[i].second;
+        }
+    }
+    if (othersBytes > 0) {
+        cats << "Otros";
+        *set << static_cast<double>(othersBytes);
+    }
+
+    // --- Barras por archivo (bytes) ---
+    auto* barChart = new QChart();
+    barChart->setTitle("Leaks por archivo (bytes)");
+    auto* series = new QBarSeries();
+    series->append(set);
+    barChart->addSeries(series);
+
+    auto* axisX = new QBarCategoryAxis();
+    axisX->append(cats);
+    auto* axisY = new QValueAxis();
+    axisY->setTitleText("Bytes");
+
+    barChart->addAxis(axisX, Qt::AlignBottom);
+    barChart->addAxis(axisY, Qt::AlignLeft);
+    series->attachAxis(axisX);
+    series->attachAxis(axisY);
+    barChart->legend()->hide();
+    barsView_->setChart(barChart);
+
+    // --- Pie distribución por archivo (%) ---
+    auto* pieChart = new QChart();
+    pieChart->setTitle("Distribución de leaks (%)");
+    auto* pie = new QPieSeries();
+
+    const int upTo = qMin(items.size(), TOPN);
+    for (int i = 0; i < upTo; ++i) {
+        if (items[i].second > 0)
+            pie->append(items[i].first, static_cast<double>(items[i].second));
+    }
+    if (othersBytes > 0) {
+        pie->append("Otros", static_cast<double>(othersBytes));
+    }
+
+    pie->setLabelsVisible(true);
+    pieChart->addSeries(pie);
+    pieChart->legend()->setVisible(true);
+
+    // Etiquetas con porcentaje
+    for (auto* slice : pie->slices()) {
+        slice->setLabel(QString("%1 (%2%)")
+                            .arg(slice->label())
+                            .arg(slice->percentage() * 100.0, 0, 'f', 1));
+    }
+    pieView_->setChart(pieChart);
+
+    // --- Temporal de detección (igual) ---
+    auto* timeChart = new QChart();
+    timeChart->setTitle("Temporal de detección de leaks");
+    auto* scat = new QScatterSeries();
+    scat->setMarkerSize(6.0);
+
+    for (const auto& L : s.leaks) {
+        const qint64 ts_ms = static_cast<qint64>(L.ts_ns / 1000000ULL);
+        if (now_ms - ts_ms >= THR_MS) {
+            const double x = double(ts_ms + THR_MS - tmin_detect) / 1000.0;
+            scat->append(x, static_cast<double>(L.size));
+        }
+    }
+
+    timeChart->addSeries(scat);
+    auto* axX = new QValueAxis(); axX->setTitleText("t (s)");
+    axX->setRange(0.0, std::max(1.0, double(tmax_detect - tmin_detect) / 1000.0));
+    auto* axY = new QValueAxis(); axY->setTitleText("Tamaño (B)");
+    timeChart->addAxis(axX, Qt::AlignBottom);
+    timeChart->addAxis(axY, Qt::AlignLeft);
+    scat->attachAxis(axX);
+    scat->attachAxis(axY);
+    timeChart->legend()->hide();
+    timeView_->setChart(timeChart);
+}
+
+
+
+void LeaksTab::onCopySelected() {
+    auto idx = table_->currentIndex(); if (!idx.isValid()) return;
+    int row = proxy_->mapToSource(idx).row();
+    LeakItem item = model_->itemAt(row);
+    QString text = QString("ptr=0x%1 size=%2 file=%3 line=%4 type=%5 ts_ns=%6")
+        .arg(QString::number(item.ptr,16)).arg(item.size).arg(item.file).arg(item.line).arg(item.type).arg(item.ts_ns);
+    QApplication::clipboard()->setText(text);
+}
+
+
+--------------------------------------------------
+
+LeaksTab.h:
+-----------
+#pragma once
+#include <QWidget>
+#include <QSortFilterProxyModel>
+#include <QtCharts/QChartView>
+#include <QtCharts/QPieSeries>
+#include <QtCharts/QBarSeries>
+#include <QtCharts/QBarSet>
+#include <QtCharts/QBarCategoryAxis>
+#include <QtCharts/QScatterSeries>
+
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+  #include <QtCharts/QChartGlobal>
+  QT_CHARTS_USE_NAMESPACE
+#endif
+
+#include "model/TableModels.h"
+#include "model/MetricsSnapshot.h"
+
+class QTableView; class QLineEdit; class QPushButton; class QLabel;
+
+class LeaksTab : public QWidget {
+    Q_OBJECT
+public:
+    explicit LeaksTab(QWidget* parent=nullptr);
+    void updateSnapshot(const MetricsSnapshot& s);
+private slots:
+    void onCopySelected();
+
+private:
+    // Filtro + tabla
+    LeaksModel* model_ = nullptr;
+    QSortFilterProxyModel* proxy_ = nullptr;
+    QTableView* table_ = nullptr;
+    QLineEdit* filterEdit_ = nullptr;
+    QPushButton* copyBtn_ = nullptr;
+
+    // Resumen KPIs
+    QLabel* leakTotalLbl_   = nullptr;
+    QLabel* largestLbl_     = nullptr;
+    QLabel* topFileLbl_     = nullptr;
+    QLabel* leakRateLbl_    = nullptr;
+
+    // Charts
+    QChartView* barsView_   = nullptr;   // barras por archivo (bytes)
+    QChartView* pieView_    = nullptr;   // pastel distribución por archivo
+    QChartView* timeView_   = nullptr;   // temporal detección
+
+    // Helpers
+    void rebuildCharts(const MetricsSnapshot& s);
+};
+
+
+--------------------------------------------------
+
+MapTab.cpp:
+-----------
+// src/tabs/MapTab.cpp
+#include "MapTab.h"
+#include <QVBoxLayout>
+#include <QPainter>
+#include <QToolTip>
+#include <QMouseEvent>
+#include <QTableView>
+#include <QHeaderView>
+#include <QStyledItemDelegate>
+#include <QDateTime>
+#include <QSortFilterProxyModel>
+#include <algorithm>
+
+// ---- Modelo interno para bloques (Ptr, Size, File, Line, Type, Edad(ms), Estado) ----
+#include <QAbstractTableModel>
+
+class BlocksModel : public QAbstractTableModel {
+    Q_OBJECT
+public:
+    explicit BlocksModel(QObject* p=nullptr) : QAbstractTableModel(p) {}
+    void setLeakThresholdMs(qulonglong ms) { leakThresholdMs_ = ms; }
+    void setDataSet(const QVector<LeakItem>& v) {
+        beginResetModel();
+        rows_ = v;
+        endResetModel();
+    }
+
+    int rowCount(const QModelIndex& parent = QModelIndex()) const override {
+        return parent.isValid()? 0 : rows_.size();
+    }
+
+    int columnCount(const QModelIndex& parent = {}) const override {
+        Q_UNUSED(parent);
+        return 6; // Ptr, Size, File, Line, Type, Estado
+    }
+
+    QVariant headerData(int s, Qt::Orientation o, int role) const override {
+        if (role != Qt::DisplayRole) return {};
+        if (o == Qt::Horizontal) {
+            switch (s) {
+                case 0: return "Ptr";
+                case 1: return "Size (B)";
+                case 2: return "File";
+                case 3: return "Line";
+                case 4: return "Type";
+                case 5: return "Estado";
+            }
+        }
+        return {};
+    }
+
+    QVariant data(const QModelIndex& i, int role) const override {
+        if (!i.isValid() || i.row() >= rows_.size()) return {};
+        const auto& L = rows_[i.row()];
+
+
+        // Valor crudo para ordenar correctamente por puntero (numérico)
+        if (role == Qt::UserRole && i.column() == 0) {
+            return static_cast<qulonglong>(L.ptr);
+        }
+
+        if (role == Qt::TextAlignmentRole) {
+            // Alinea numéricos a la derecha para lectura
+            if (i.column() == 1 || i.column() == 3 || i.column() == 5) {
+                return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
+            }
+        }
+
+        if (role == Qt::ForegroundRole) {
+            return isLeak ? QColor(200,40,40) : QColor(40,140,60);
+        }
+
+        if (role == Qt::DisplayRole) {
+            switch (i.column()) {
+                case 0: return QString("0x%1").arg(QString::number(static_cast<qulonglong>(L.ptr), 16));
+                case 1: return L.size;
+                case 2: return L.file;
+                case 3: return L.line;
+                case 4: return L.type;          // <--- NUEVO
+                case 5: return age_ms;
+                case 6: return isLeak ? "LEAK" : "Activo";
+            }
+        }
+        return {};
+    }
+
+private:
+    QVector<LeakItem> rows_;
+};
+
+class MapBinsCanvas : public QWidget {
+    Q_OBJECT
+public:
+    explicit MapBinsCanvas(QWidget* p=nullptr) : QWidget(p) {
+        setMouseTracking(true);
+    }
+    void setBins(const QVector<BinRange>& v) { bins_ = v; update(); }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.fillRect(rect(), palette().base());
+        if (bins_.isEmpty()) { p.drawText(rect(), Qt::AlignCenter, "Sin datos de bins"); return; }
+
+        const int L=40, R=20, T=20, B=30;
+        QRect area(L, T, width()-L-R, height()-T-B);
+        p.drawRect(area);
+
+        qint64 maxBytes = 0; for (const auto& b : bins_) maxBytes = std::max(maxBytes, b.bytes);
+        if (maxBytes==0) maxBytes = 1;
+
+        const int n = bins_.size();
+        const double w = static_cast<double>(area.width())/n;
+
+        for (int i=0;i<n;++i) {
+            const auto& b = bins_[i];
+            double h = static_cast<double>(b.bytes) / static_cast<double>(maxBytes) * area.height();
+            QRectF bar(area.left()+i*w+1, area.bottom()-h, w-2, h);
+            p.fillRect(bar, QColor(80,140,220));
+        }
+
+        // ejes simples
+        p.drawText(5, T-4, "bytes");
+        p.drawText(area.right()-40, area.bottom()+20, "addr →");
+    }
+
+    void mouseMoveEvent(QMouseEvent* e) override {
+        if (bins_.isEmpty()) return;
+        const int L=40, R=20, T=20, B=30; QRect area(L, T, width()-L-R, height()-T-B);
+        if (!area.contains(e->pos())) { QToolTip::hideText(); return; }
+        const int n = bins_.size();
+        double w = static_cast<double>(area.width())/n;
+        int idx = std::clamp(static_cast<int>((e->pos().x()-area.left())/w), 0, n-1);
+        const auto& b = bins_[idx];
+        QString txt = QString("[%1 - %2)\nbytes=%3\nallocs=%4")
+        .arg(QString("0x%1").arg(QString::number(b.lo,16)))
+        .arg(QString("0x%1").arg(QString::number(b.hi,16)))
+        .arg(static_cast<qlonglong>(b.bytes))
+        .arg(b.allocations);
+        QToolTip::showText(e->globalPosition().toPoint(), txt, this);
+    }
+
+private:
+    QVector<BinRange> bins_;
+};
+
+MapTab::MapTab(QWidget* parent): QWidget(parent) {
+    auto* root = new QVBoxLayout(this);
+
+    // Canvas superior de bins
+    binsCanvas_ = new MapBinsCanvas(this);
+    binsCanvas_->setMinimumHeight(180);
+    root->addWidget(binsCanvas_);
+
+    // Tabla de bloques individuales
+    table_ = new QTableView(this);
+
+    // Modelo crudo + proxy para ordenar por puntero numérico (UserRole)
+    auto* rawModel = new BlocksModel(this);
+    auto* proxy = new QSortFilterProxyModel(this);
+    proxy->setSourceModel(rawModel);
+    proxy->setSortRole(Qt::UserRole);
+
+    table_->setModel(proxy);
+    table_->setSortingEnabled(true);
+    table_->horizontalHeader()->setStretchLastSection(true);
+    table_->verticalHeader()->setVisible(false);
+    root->addWidget(table_);
+}
+
+void MapTab::updateSnapshot(const MetricsSnapshot& s) {
+    bins_ = s.bins;
+    blocks_ = s.leaks; // bloques vivos
+    repaintCanvas();
+
+    // Soportar tanto modelo crudo como proxy (por si cambia en el futuro)
+    BlocksModel* m = nullptr;
+    if (auto* proxy = qobject_cast<QSortFilterProxyModel*>(table_->model())) {
+        m = qobject_cast<BlocksModel*>(proxy->sourceModel());
+    } else {
+        m = qobject_cast<BlocksModel*>(table_->model());
+    }
+    if (m) m->setDataSet(blocks_);
+}
+
+void MapTab::repaintCanvas() {
+    if (auto* c = qobject_cast<MapBinsCanvas*>(binsCanvas_)) {
+        c->setBins(bins_);
+    }
+}
+
+#include "MapTab.moc"
+
+
+--------------------------------------------------
+
+MapTab.h:
+---------
+#pragma once
+#include <QWidget>
+#include <QVector>
+#include "model/MetricsSnapshot.h"
+
+class QTableView;
+
+class MapTab : public QWidget {
+    Q_OBJECT
+public:
+    explicit MapTab(QWidget* parent=nullptr);
+    void updateSnapshot(const MetricsSnapshot& s);
+    void setLeakThresholdMs(qulonglong ms) { leakThresholdMs_ = ms; } // nuevo
+private:
+    // Canvas de bins (widget hijo que pinta)
+    QWidget* binsCanvas_ = nullptr;
+
+    // Datos
+    QVector<BinRange> bins_;
+    QVector<LeakItem> blocks_; // bloques vivos
+
+    // Tabla de bloques
+    QTableView* table_ = nullptr;
+
+    // Re-render del canvas
+    void repaintCanvas();
+
+
+ // Umbral para marcar LEAK por antigüedad (configurable)
+    qulonglong leakThresholdMs_ = 10000; // 10 s por defecto
+};
+
+
+--------------------------------------------------
+
+PerFileTab.cpp:
+---------------
+#include "PerFileTab.h"
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QTableView>
+#include <QHeaderView>
+#include <QLineEdit>
+#include <QLabel>
+#include <QAbstractItemView>
+
+PerFileTab::PerFileTab(QWidget* parent) : QWidget(parent) {
+    auto* root = new QVBoxLayout(this);
+
+    // Fila superior: filtro + contador
+    auto* top = new QHBoxLayout();
+    filterEdit_ = new QLineEdit(this);
+    filterEdit_->setPlaceholderText("Filtrar por nombre de archivo…");
+    totalRows_ = new QLabel("0 items", this);
+    top->addWidget(filterEdit_, /*stretch*/ 1);
+    top->addWidget(totalRows_);
+    root->addLayout(top);
+
+    // Modelo base y proxy para filtrado/ordenamiento
+    model_ = new PerFileModel(this);
+    proxy_ = new QSortFilterProxyModel(this);
+    proxy_->setSourceModel(model_);
+    proxy_->setDynamicSortFilter(true);
+    proxy_->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    proxy_->setFilterKeyColumn(0); // columna Archivo
+
+    // Tabla
+    table_ = new QTableView(this);
+    table_->setModel(proxy_);
+    table_->setSortingEnabled(true);
+    table_->setAlternatingRowColors(true);
+    table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table_->setSelectionMode(QAbstractItemView::SingleSelection);
+
+    // Ajustes de headers
+    auto* hh = table_->horizontalHeader();
+    hh->setStretchLastSection(true);
+    hh->setSectionsClickable(true);
+    hh->setSortIndicatorShown(true);
+    // Opcional: ajusta automáticamente ancho de columnas 0-1 (archivo y conteo)
+    // hh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    // hh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+
+    table_->verticalHeader()->setVisible(false);
+    root->addWidget(table_);
+
+    // Filtro: texto -> proxy
+    connect(filterEdit_, &QLineEdit::textChanged,
+            proxy_,       &QSortFilterProxyModel::setFilterFixedString);
+}
+
+void PerFileTab::updateSnapshot(const MetricsSnapshot& s) {
+    // Se asume que PerFileModel expone setDataSet(...) como en tu proyecto
+    model_->setDataSet(s.perFile);
+
+    // Actualizar contador visible (tras filtrado mostramos total bruto para consistencia con otras pestañas)
+    totalRows_->setText(QString("%1 items").arg(s.perFile.size()));
+
+    // Mantener orden por defecto (por ejemplo, Bytes desc) si el modelo expone esa columna
+    // Nota: esto solo aplica si el modelo devuelve tipos numéricos reales en esas columnas.
+    // table_->sortByColumn(2, Qt::DescendingOrder); // Descomenta si la col 2 es "Bytes"
+}
+
+
+--------------------------------------------------
+
+PerFileTab.h:
+-------------
+#pragma once
+#include <QWidget>
+#include <QSortFilterProxyModel>
+#include "model/TableModels.h"
+#include "model/MetricsSnapshot.h"
+
+class QTableView;
+class QLineEdit;
+class QLabel;
+
+class PerFileTab : public QWidget {
+    Q_OBJECT
+public:
+    explicit PerFileTab(QWidget* parent=nullptr);
+    void updateSnapshot(const MetricsSnapshot& s);
+
+private:
+    PerFileModel* model_ = nullptr;
+    QSortFilterProxyModel* proxy_ = nullptr;
+    QTableView* table_ = nullptr;
+    QLineEdit* filterEdit_ = nullptr;
+    QLabel* totalRows_ = nullptr;
+};
+
+
+--------------------------------------------------
+
+mock_broker.cpp:
+----------------
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <chrono>
+#include <thread>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#define closesocket close
+#endif
+
+
+static void sleep_ms(int ms){ std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+
+
+int main(){
+#ifdef _WIN32
+WSADATA wsa; WSAStartup(MAKEWORD(2,2), &wsa);
+#endif
+int srv = socket(AF_INET, SOCK_STREAM, 0);
+sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(7070); addr.sin_addr.s_addr = htonl(INADDR_ANY);
+bind(srv, (sockaddr*)&addr, sizeof(addr)); listen(srv, 1);
+printf("mock_broker escuchando en 7070...\n");
+int cli = accept(srv, nullptr, nullptr); printf("cliente conectado\n");
+
+
+// parámetros de bins/direcciones ficticias
+unsigned long long base = 0x10000000ULL; unsigned long long hi = 0x20000000ULL; const int nBins = 64;
+long long t = 0; long long heap = 0, peak = 0;
+
+
+while (true) {
+// generar 100 leaks vivos falsos repartidos
+std::string per_file = "";
+std::string leaks = "";
+for (int i=0;i<100;++i){
+unsigned long long ptr = base + (rand()%((int)(hi-base)));
+int sz = (rand()%4096)+16; heap += sz; if (heap>peak) peak=heap; if (rand()%4==0) heap -= sz;
+char buf[256];
+snprintf(buf, sizeof(buf), "{\"ptr\":%llu,\"size\":%d,\"file\":\"file%02d.cpp\",\"line\":%d,\"type\":\"int*\",\"ts_ns\":%lld}",
+ptr, sz, i%7, 10+(i%200), (long long)(t*1000000LL));
+if (!leaks.empty()) leaks += ","; leaks += buf;
+}
+for (int f=0; f<7; ++f) {
+char buf[256];
+long long tot = 10000 + (rand()%20000); int allocs = 30+(rand()%150); int frees = allocs - (rand()%30);
+snprintf(buf, sizeof(buf), "{\"file\":\"file%02d.cpp\",\"total_bytes\":%lld,\"allocs\":%d,\"frees\":%d,\"net_bytes\":%lld}", f, tot, allocs, frees, tot - frees*64);
+if (!per_file.empty()) per_file += ","; per_file += buf;
+}
+std::string bins = "";
+for (int b=0;b<nBins;++b){
+unsigned long long lo = base + (unsigned long long)((double)b/nBins*(hi-base));
+unsigned long long hh = base + (unsigned long long)((double)(b+1)/nBins*(hi-base));
+int bytes = rand()%50000; int al = rand()%100;
+char buf[256]; snprintf(buf, sizeof(buf), "{\"addr_lo\":%llu,\"addr_hi\":%llu,\"bytes\":%d,\"allocations\":%d}", lo, hh, bytes, al);
+if (!bins.empty()) bins += ","; bins += buf;
+}
+
+
+char json[65536];
+snprintf(json, sizeof(json),
+"{\"kind\":\"SNAPSHOT\",\"general\":{\"heap_current\":%lld,\"heap_peak\":%lld,\"alloc_rate\":%.2f,\"free_rate\":%.2f,\"uptime_ms\":%lld},\"bins\":[%s],\"per_file\":[%s],\"leaks\":[%s]}\n",
+heap, peak, 50.0 + (rand()%50), 40.0 + (rand()%40), t, bins.c_str(), per_file.c_str(), leaks.c_str());
+
+
+send(cli, json, (int)strlen(json), 0);
+t += 200; sleep_ms(200);
+}
+closesocket(cli); closesocket(srv);
+#ifdef _WIN32
+WSACleanup();
+#endif
+return 0;
+}
+
+--------------------------------------------------
+
