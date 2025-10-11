@@ -15,7 +15,6 @@ endif()
 
 include(GNUInstallDirs)
 
-# Fuentes (rutas relativas a memprof/)
 set(MEMPROF_SRC
         backend/core/MetricsAggregator.cpp
         backend/core/MetricsCalculator.cpp
@@ -33,7 +32,7 @@ endif()
 add_library(memprof STATIC ${MEMPROF_SRC})
 add_library(Memprof::memprof ALIAS memprof)
 
-# Backend sin Qt — usa el header dual (shims)
+# Backend sin Qt: shims (QString/QVector/etc.)
 target_compile_definitions(memprof PUBLIC MEMPROF_NO_QT=1)
 set_target_properties(memprof PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 target_compile_features(memprof PUBLIC cxx_std_20)
@@ -53,14 +52,16 @@ else()
     target_link_libraries(memprof PUBLIC Threads::Threads)
 endif()
 
-# (Opcional) instalación/export
+# Instalación/export opcional
 install(TARGETS memprof
         EXPORT MemprofTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(EXPORT MemprofTargets
         FILE MemprofTargets.cmake
         NAMESPACE Memprof::
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Memprof)
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Memprof
+)

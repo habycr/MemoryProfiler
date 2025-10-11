@@ -1,4 +1,4 @@
-// src/lib/memprof_runtime.cpp
+// memprof/src/lib/Runtime.cpp
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -13,6 +13,31 @@
 
 #include "memprof/core/MetricsAggregator.h"
 #include "memprof/core/TcpClient.h"
+
+// --- helper: escapado JSON seguro para strings de ruta/tipo ---
+static std::string json_escape(const std::string& s) {
+    std::string out; out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '\"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    char buf[7];
+                    std::snprintf(buf, sizeof(buf), "\\u%04X", c);
+                    out += buf;
+                } else {
+                    out += static_cast<char>(c);
+                }
+        }
+    }
+    return out;
+}
 
 // ---------------- Estado global ----------------
 static std::atomic<bool> g_running{false};
@@ -52,7 +77,8 @@ void memprof_record_alloc(void* ptr, std::size_t sz, const char* file, int line)
         file ? std::string(file) : std::string("unknown"),
         line,
         "global_new",
-        false /*is_array*/);
+        false /*is_array*/
+    );
 }
 
 void memprof_record_free(void* ptr) {
@@ -69,7 +95,7 @@ int memprof_init(const char* host, int port) {
     std::thread([]{
         TcpClient client;
 
-        // --- Estado para tasas ---
+        // --- estado previo para tasas ---
         uint64_t prev_total_allocs = 0;
         uint64_t prev_active       = 0;
         auto     prev_tp           = steady_clock_t::now();
@@ -103,15 +129,14 @@ int memprof_init(const char* host, int port) {
             uint64_t total_allocs = 0;
             for (const auto& kv : perfile) total_allocs += kv.second.alloc_count;
 
-            // --- Tasas alloc/free (aprox) ---
+            // --- tasas alloc/free (aprox) ---
             const auto now_tp = steady_clock_t::now();
             const double dt_s = std::max(0.001,
                 std::chrono::duration_cast<std::chrono::duration<double>>(now_tp - prev_tp).count());
 
             const int64_t d_allocs = (int64_t)total_allocs - (int64_t)prev_total_allocs;
             const int64_t d_active = (int64_t)active_allocs - (int64_t)prev_active;
-            // frees ≈ allocs - delta(live)
-            const int64_t d_frees  = d_allocs - d_active;
+            const int64_t d_frees  = d_allocs - d_active; // frees ≈ allocs - delta(live)
 
             const double alloc_rate = d_allocs > 0 ? (double)d_allocs / dt_s : 0.0;
             const double free_rate  = d_frees  > 0 ? (double)d_frees  / dt_s : 0.0;
@@ -120,7 +145,7 @@ int memprof_init(const char* host, int port) {
             prev_active       = active_allocs;
             prev_tp           = now_tp;
 
-            // bins (por tamaño)
+            // --- bins por tamaño (potencias de 2) ---
             struct Bin { uint64_t lo, hi, bytes, allocations; };
             std::vector<uint64_t> edges;
             for (uint64_t v = 1; v <= (1ull<<30); v <<= 1) edges.push_back(v);
@@ -147,7 +172,7 @@ int memprof_init(const char* host, int port) {
             std::ostringstream ss;
             ss << '{';
 
-            // general + KPIs de fugas y tasas
+            // general + KPIs + tasas
             ss << "\"general\":{"
                << "\"uptime_ms\":"      << uptime_ms()      << ','
                << "\"heap_current\":"   << heap_current     << ','
@@ -159,8 +184,8 @@ int memprof_init(const char* host, int port) {
                << "\"leak_bytes\":"     << kpis.total_leak_bytes << ','
                << "\"leak_rate\":"      << kpis.leak_rate         << ','
                << "\"largest_size\":"   << kpis.largest.size      << ','
-               << "\"largest_file\":\"" << kpis.largest.file      << "\","
-               << "\"top_file\":\""     << kpis.top_file_by_leaks.file   << "\","
+               << "\"largest_file\":\"" << json_escape(kpis.largest.file) << "\","
+               << "\"top_file\":\""     << json_escape(kpis.top_file_by_leaks.file) << "\","
                << "\"top_file_count\":" << kpis.top_file_by_leaks.count  << ','
                << "\"top_file_bytes\":" << kpis.top_file_by_leaks.bytes
                << "},";
@@ -176,7 +201,7 @@ int memprof_init(const char* host, int port) {
                 if (!first) ss << ',';
                 first = false;
                 ss << '{'
-                   << "\"file\":\""     << file << "\","
+                   << "\"file\":\""     << json_escape(file) << "\","
                    << "\"totalBytes\":" << fs.alloc_bytes << ','
                    << "\"allocs\":"     << fs.alloc_count << ','
                    << "\"frees\":"      << frees          << ','
@@ -198,7 +223,7 @@ int memprof_init(const char* host, int port) {
             }
             ss << "],";
 
-            // leaks (bloques vivos) + is_leak decidido aquí
+            // leaks (bloques vivos) + is_leak
             const uint64_t now = now_ns();
             const uint64_t thr_ns = g_agg.getLeakThresholdMs() * 1000000ULL;
 
@@ -210,9 +235,9 @@ int memprof_init(const char* host, int port) {
                 ss << '{'
                    << "\"ptr\":\""   << b.ptr  << "\","
                    << "\"size\":"    << b.size << ','
-                   << "\"file\":\""  << b.file << "\","
+                   << "\"file\":\""  << json_escape(b.file) << "\","
                    << "\"line\":"    << b.line << ','
-                   << "\"type\":\""  << b.type << "\","
+                   << "\"type\":\""  << json_escape(b.type) << "\","
                    << "\"ts_ns\":"   << b.ts_ns << ','
                    << "\"is_leak\":" << (is_leak ? "true" : "false")
                    << '}';
@@ -235,6 +260,7 @@ int memprof_init(const char* host, int port) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
     }).detach();
+
     return 0;
 }
 

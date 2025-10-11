@@ -12,7 +12,7 @@
 
 // IMPORTANTE: activar el wrapper y luego incluir la API DESPUÉS de la STL
 #define MEMPROF_WRAP_NEW 1
-#include "../include/memprof/core/Runtime.h"
+#include "memprof/core/Runtime.h"
 
 static void sleep_ms(int ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));

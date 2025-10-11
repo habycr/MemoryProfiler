@@ -1,7 +1,7 @@
 #pragma once
 #include <QWidget>
 #include <QVector>
-#include "../include/memprof/proto/MetricsSnapshot.h"
+#include "memprof/proto/MetricsSnapshot.h"
 
 class QTableView;
 

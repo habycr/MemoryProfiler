@@ -31,10 +31,10 @@ set(GUI_SOURCES
 add_executable(memory_profiler_gui ${GUI_SOURCES})
 add_executable(memprof-gui ALIAS memory_profiler_gui)
 
-# Reutiliza DTOs desde la lib
+# Headers disponibles desde la raíz de memprof-gui y la API pública de la lib
 target_include_directories(memory_profiler_gui PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../memprof/include
-        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}                  # permite "frontend/..."
+        ${CMAKE_CURRENT_SOURCE_DIR}/../memprof/include  # permite "memprof/..."
 )
 
 target_link_libraries(memory_profiler_gui PRIVATE

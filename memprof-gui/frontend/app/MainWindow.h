@@ -1,7 +1,10 @@
 #pragma once
 #include <QMainWindow>
 #include <QString>
-#include "../include/memprof/proto/MetricsSnapshot.h"
+#include <QSharedPointer>
+#include <QTimer>
+
+#include "memprof/proto/MetricsSnapshot.h"
 
 class QTabWidget;
 class QThread;
@@ -18,8 +21,9 @@ public:
     ~MainWindow() override;
 
 private slots:
-    void onSnapshot(const MetricsSnapshot& s);
+    void onSnapshot(QSharedPointer<const MetricsSnapshot> s); // recibe puntero compartido
     void onStatus(const QString& st);
+    void uiTick(); // pinta a ~12.5 FPS el último snapshot guardado
 
 private:
     QTabWidget* tabs_ = nullptr;
@@ -28,6 +32,9 @@ private:
     PerFileTab* perFile_ = nullptr;
     LeaksTab*   leaks_ = nullptr;
 
-    QThread*     thread_ = nullptr;   // <-- faltaba
-    ServerWorker* worker_ = nullptr;  // <-- por claridad
+    QThread*      thread_  = nullptr;
+    ServerWorker* worker_  = nullptr;
+
+    QTimer* uiTimer_ = nullptr;
+    QSharedPointer<const MetricsSnapshot> pending_; // último snapshot recibido
 };

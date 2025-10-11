@@ -4,7 +4,7 @@
 #include <chrono>
 #include <cstdio>
 #include <atomic>
-#include "../include/memprof/core/Runtime.h"
+#include "memprof/core/Runtime.h"
 
 // ---- Declaraciones forward: vienen de alloc_a.cpp y alloc_b.cpp ----
 void worker_small_churn(std::atomic<bool>& stop);   // alloc_a.cpp

@@ -1,5 +1,5 @@
 #include "GeneralTab.h"
-#include "../include/memprof/proto/MetricsSnapshot.h"
+#include "memprof/proto/MetricsSnapshot.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -21,6 +21,7 @@ static inline QString bytesToHuman(qint64 b) {
   double mb = kb / 1024.0; if (mb < 1024.0) return QString::number(mb, 'f', 1) + " MB";
   double gb = mb / 1024.0; return QString::number(gb, 'f', 2) + " GB";
 }
+constexpr int kMaxPoints = 600;
 } // namespace
 
 GeneralTab::GeneralTab(QWidget* parent) : QWidget(parent) {
@@ -43,13 +44,12 @@ GeneralTab::GeneralTab(QWidget* parent) : QWidget(parent) {
   root->addLayout(topRow);
 
   // ================= Memoria vs tiempo (MB) =================
-  // ÚNICA serie y sin OpenGL para evitar artefactos de doble trazo
   memSeries_ = new QLineSeries();
-  // memSeries_->setUseOpenGL(true); // <- DESACTIVADO a propósito
 
   memChart_ = new QChart();
   memChart_->legend()->hide();
   memChart_->addSeries(memSeries_);
+  memChart_->setAnimationOptions(QChart::NoAnimation); // <- clave
 
   axX_mem_ = new QValueAxis();
   axX_mem_->setTitleText("t (s)");
@@ -65,10 +65,8 @@ GeneralTab::GeneralTab(QWidget* parent) : QWidget(parent) {
   memSeries_->attachAxis(axY_mem_);
 
   memChartView_ = new QChartView(memChart_);
-  memChartView_->setRenderHint(QPainter::Antialiasing);
+  memChartView_->setRenderHint(QPainter::Antialiasing, true);
   root->addWidget(memChartView_);
-
-
 
   // ----- Top-3 por archivo -----
   top3_ = new QTableWidget(3, 3, this);
@@ -116,16 +114,22 @@ void GeneralTab::updateSnapshot(const MetricsSnapshot& s) {
   const double memMB = s.heapCurrent / (1024.0 * 1024.0);
   memSeries_->append(t_, memMB);
 
-  // Ventana ~120 s
-  const double WINDOW_S = 120.0;
-  while (memSeries_->count() > 0 && memSeries_->at(0).x() < t_ - WINDOW_S) {
-    memSeries_->removePoints(0, 1);
+  // Mantener como máximo kMaxPoints con eliminación por lote
+  const int n = memSeries_->count();
+  if (n > kMaxPoints) {
+    memSeries_->removePoints(0, n - kMaxPoints);
   }
 
-  // Actualizar ejes usando punteros persistentes (sin buscar en el chart)
-  axX_mem_->setRange(std::max(0.0, t_ - WINDOW_S), t_);
-  axY_mem_->setRange(0.0, std::max(axY_mem_->max(), std::max(1.0, memMB * 1.2)));
+  // Actualizar ejes: ventana deslizante basada en puntos actuales
+  const int n2 = memSeries_->count();
+  if (n2 > 0) {
+    const double x0 = memSeries_->at(0).x();
+    const double x1 = memSeries_->at(n2 - 1).x();
+    axX_mem_->setRange(x0, x1);
+  }
 
+  // Y: crecer cuando haga falta
+  axY_mem_->setRange(0.0, std::max(axY_mem_->max(), std::max(1.0, memMB * 1.2)));
 
   // ----- Top-3 por archivo -----
   struct R { QString file; int allocs; qint64 bytes; };
@@ -135,10 +139,10 @@ void GeneralTab::updateSnapshot(const MetricsSnapshot& s) {
     if (a.bytes != b.bytes) return a.bytes > b.bytes;
     return a.allocs > b.allocs;
   });
-  const int N = std::min<int>(3, (int)rows.size());
+  const int N = std::min<int>(3, static_cast<int>(rows.size()));
   top3_->clearContents();
   top3_->setRowCount(N);
-  for (int i=0;i<N;++i) {
+  for (int i = 0; i < N; ++i) {
     top3_->setItem(i, 0, new QTableWidgetItem(rows[i].file));
     top3_->setItem(i, 1, new QTableWidgetItem(QString::number(rows[i].allocs)));
     top3_->setItem(i, 2, new QTableWidgetItem(bytesToHuman(rows[i].bytes)));

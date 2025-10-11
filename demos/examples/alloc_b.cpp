@@ -5,7 +5,7 @@
 #include <thread>
 #include <atomic>
 #include <string>
-#include "../include/memprof/core/Runtime.h"
+#include "memprof/core/Runtime.h"
 struct Obj {
     int a, b, c;
     std::string s;
