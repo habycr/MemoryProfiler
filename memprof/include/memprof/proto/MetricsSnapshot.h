@@ -1,22 +1,23 @@
 #pragma once
 
-// ===== Soporte dual (backend std / frontend Qt) =====
-// El backend define MEMPROF_NO_QT en CMake.
-// En backend, proveemos "shims" con los NOMBRES de tipos de Qt (QString, QVector,
-// qulonglong, qlonglong) pero mapeados a std::* para no romper APIs ni nombres de campos.
-#ifdef MEMPROF_NO_QT
+// --- BEGIN Qt/Std shims (no redefinir si Qt está presente) ---
+#if !defined(QT_CORE_LIB) && !defined(MEMPROF_USE_QT_TYPES)
+// Compilación sin Qt: usa std::
   #include <cstdint>
   #include <string>
   #include <vector>
   using qulonglong = std::uint64_t;
   using qlonglong  = std::int64_t;
-  using QString    = std::string;
-  template <typename T> using QVector = std::vector<T>;
+  using QString = std::string;
+  template <typename T>
+  using QVector = std::vector<T>;
 #else
-  #include <QtGlobal>
+// Compilación con Qt: usa los tipos nativos de Qt
+  #include <QtGlobal>  // para qulonglong/qlonglong
   #include <QString>
   #include <QVector>
 #endif
+// --- END Qt/Std shims ---
 
 // --- Rangos (para bins del Mapa de Memoria) ---
 struct BinRange {

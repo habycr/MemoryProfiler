@@ -1,8 +1,12 @@
-// src/main.cpp
+// memprof-gui/frontend/app/main.cpp
 #include <QApplication>
 #include "MainWindow.h"
-int main(int argc, char** argv) {
+
+int main(int argc, char *argv[])
+{
     QApplication app(argc, argv);
-    MainWindow w; w.resize(1100, 720); w.show();
+    MainWindow w;
+    w.show();
     return app.exec();
 }
+

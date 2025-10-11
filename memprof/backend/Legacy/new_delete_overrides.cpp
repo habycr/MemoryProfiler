@@ -1,27 +1,14 @@
-// Legacy/new_delete_overrides.cpp
+// memprof/src/legacy/new_delete_overrides.cpp
 #include <new>
 #include <cstddef>
 #include <cstdlib>
-#include <atomic>
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
   #include <malloc.h> // _aligned_malloc, _aligned_free
 #endif
 
-// --- OPCIONAL: notificación directa al runtime/GUI ---
-// #include "src/lib/memprof_api.h"
-
-// --- Registro opcional (tu registry.hpp legado) ---
-#ifdef MEMPROF_ENABLE_REGISTRY
-  #include "registry.hpp"
-  #define MP_REG_ALLOC_SCALAR(P,SZ,FILE,LINE,TYPE) memprof::register_alloc((P),(SZ),(FILE),(LINE),(TYPE),false)
-  #define MP_REG_ALLOC_ARRAY(P,SZ,FILE,LINE,TYPE)  memprof::register_alloc((P),(SZ),(FILE),(LINE),(TYPE),true)
-  #define MP_REG_FREE(P)                           memprof::register_free((P))
-#else
-  #define MP_REG_ALLOC_SCALAR(P,SZ,FILE,LINE,TYPE) ((void)0)
-  #define MP_REG_ALLOC_ARRAY(P,SZ,FILE,LINE,TYPE)  ((void)0)
-  #define MP_REG_FREE(P)                           ((void)0)
-#endif
+// Prototipos del registro (expuestos por tu header de registry)
+#include "registry.hpp"   // debe declarar memprof::register_alloc / register_free
 
 namespace {
 thread_local bool mp_in_new = false;
@@ -69,8 +56,7 @@ void* operator new(std::size_t n) {
   void* p = std::malloc(n);
   if (!p) throw std::bad_alloc();
 
-  MP_REG_ALLOC_SCALAR(p, n, nullptr, 0, nullptr);
-  // memprof_record_alloc(p, n, "global_new", 0);
+  memprof::register_alloc(p, n, /*file*/nullptr, /*line*/0, /*type*/nullptr, /*is_array*/false);
   return p;
 }
 
@@ -80,8 +66,7 @@ void operator delete(void* p) noexcept {
   if (mp_in_new) { std::free(p); return; }
 
   ReentrancyGuard guard;
-  // memprof_record_free(p);
-  MP_REG_FREE(p);
+  memprof::register_free(p);
   std::free(p);
 }
 
@@ -108,8 +93,7 @@ void* operator new[](std::size_t n) {
   void* p = std::malloc(n);
   if (!p) throw std::bad_alloc();
 
-  MP_REG_ALLOC_ARRAY(p, n, nullptr, 0, nullptr);
-  // memprof_record_alloc(p, n, "global_new[]", 0);
+  memprof::register_alloc(p, n, /*file*/nullptr, /*line*/0, /*type*/nullptr, /*is_array*/true);
   return p;
 }
 
@@ -119,8 +103,7 @@ void operator delete[](void* p) noexcept {
   if (mp_in_new) { std::free(p); return; }
 
   ReentrancyGuard guard;
-  // memprof_record_free(p);
-  MP_REG_FREE(p);
+  memprof::register_free(p);
   std::free(p);
 }
 
@@ -147,8 +130,7 @@ void* operator new(std::size_t n, std::align_val_t al) {
   void* p = mp_aligned_alloc(n, alignment);
   if (!p) throw std::bad_alloc();
 
-  MP_REG_ALLOC_SCALAR(p, n, nullptr, 0, nullptr);
-  // memprof_record_alloc(p, n, "global_new_aligned", 0);
+  memprof::register_alloc(p, n, /*file*/nullptr, /*line*/0, /*type*/nullptr, /*is_array*/false);
   return p;
 }
 
@@ -158,8 +140,7 @@ void operator delete(void* p, std::align_val_t al) noexcept {
   if (mp_in_new) { mp_aligned_free(p); return; }
 
   ReentrancyGuard guard;
-  // memprof_record_free(p);
-  MP_REG_FREE(p);
+  memprof::register_free(p);
   mp_aligned_free(p);
 }
 
@@ -190,8 +171,7 @@ void* operator new[](std::size_t n, std::align_val_t al) {
   void* p = mp_aligned_alloc(n, alignment);
   if (!p) throw std::bad_alloc();
 
-  MP_REG_ALLOC_ARRAY(p, n, nullptr, 0, nullptr);
-  // memprof_record_alloc(p, n, "global_new[]_aligned", 0);
+  memprof::register_alloc(p, n, /*file*/nullptr, /*line*/0, /*type*/nullptr, /*is_array*/true);
   return p;
 }
 
@@ -201,26 +181,50 @@ void operator delete[](void* p, std::align_val_t al) noexcept {
   if (mp_in_new) { mp_aligned_free(p); return; }
 
   ReentrancyGuard guard;
-  // memprof_record_free(p);
-  MP_REG_FREE(p);
+  memprof::register_free(p);
   mp_aligned_free(p);
 }
 
-// ======================================================
-//      Overloads adicionales (completan el set)
-// ======================================================
-
-// delete[] sized + aligned  (FALTANTE: ahora incluido)
+// Completa el set: delete[] sized+aligned / new[] aligned+nothrow
 void operator delete[](void* p, std::size_t /*sz*/, std::align_val_t al) noexcept {
   ::operator delete(p, al);
 }
-
-// new[] aligned + nothrow  (FALTANTE: ahora incluido)
 void* operator new[](std::size_t n, std::align_val_t al, const std::nothrow_t&) noexcept {
   try { return ::operator new[](n, al); } catch (...) { return nullptr; }
 }
 
 // ======================================================
-// NOTA: se eliminaron las sobrecargas “placement-like”
-// (file/line[/type]) para no duplicar lo de memprof_api.h.
+//    Sobrecargas con file/line (para memprof_new.h)
 // ======================================================
+void* operator new(std::size_t n, const char* file, int line) {
+  if (n == 0) n = 1;
+
+  if (mp_in_new) {
+    void* p = std::malloc(n);
+    if (!p) throw std::bad_alloc();
+    return p;
+  }
+
+  ReentrancyGuard guard;
+  void* p = std::malloc(n);
+  if (!p) throw std::bad_alloc();
+
+  memprof::register_alloc(p, n, file ? file : nullptr, line, /*type*/nullptr, /*is_array*/false);
+  return p;
+}
+void* operator new[](std::size_t n, const char* file, int line) {
+  if (n == 0) n = 1;
+
+  if (mp_in_new) {
+    void* p = std::malloc(n);
+    if (!p) throw std::bad_alloc();
+    return p;
+  }
+
+  ReentrancyGuard guard;
+  void* p = std::malloc(n);
+  if (!p) throw std::bad_alloc();
+
+  memprof::register_alloc(p, n, file ? file : nullptr, line, /*type*/nullptr, /*is_array*/true);
+  return p;
+}
